@@ -1,0 +1,80 @@
+[skill]
+name = "ix-debug"
+description = "Root cause analysis — trace execution path to a failure, narrow candidates, read minimal source only at suspected failure points."
+argument_hint = "<symptom, failing function, or suspected component>"
+
+[skill.prompt]
+text = """
+Check `command -v ix` first. If unavailable, use grep + file reads as fallback.
+
+## Goal
+
+Answer: where in the execution path is this likely failing, and why? Stop once you have 1-3 root cause candidates with supporting evidence.
+
+## Phase 1 — Locate the entry point (always)
+
+```bash
+ix locate $ARGUMENTS --limit 5 --format json
+```
+
+If `$ARGUMENTS` is a symptom description, also run:
+```bash
+ix text "$ARGUMENTS" --limit 10 --format json
+```
+
+## Phase 2 — Explain (always)
+
+```bash
+ix explain <entry-point> --format json
+```
+
+Classify: boundary (unexpected input), orchestrator (wrong sequencing), utility (wrong assumptions by caller).
+Stop if: the explanation makes the failure source obvious.
+
+## Phase 3 — Trace the execution path
+
+```bash
+ix trace <entry-point> --downstream --format json
+```
+
+Look for: state validation, cross-subsystem calls, high-callee-count functions.
+Narrow to 1-3 most suspicious nodes.
+
+## Phase 4 — Callers (if failure might come from upstream)
+
+```bash
+ix callers <entry-point> --limit 10 --format json
+```
+
+## Phase 5 — Targeted code read (at most 2 calls)
+
+For each root cause candidate (max 2):
+```bash
+ix read <candidate-function> --format json
+```
+
+Hard limit: 2 `ix read` calls maximum.
+
+## Output
+
+```text
+## Debug: [entry point]
+
+**Execution path:**
+[entry-point] -> [step] -> [step] -> [suspected failure point]
+
+**Root cause candidates:**
+1. [function/file] — [reason: what assumption might be wrong]
+2. [function/file] — [reason]
+
+**Evidence:**
+- [what graph data supports each candidate]
+- [what code read revealed, if any]
+
+**Confidence:** [high / medium / low] — [why]
+
+**Next steps:**
+- Add logging at [specific point] to confirm
+- Check [specific edge case] in [function]
+```
+"""

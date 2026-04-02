@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""BeforeTool hook — intercept shell grep/read commands with Ix context."""
+from __future__ import annotations
+
+from common import (
+    build_read_message,
+    build_search_message,
+    emit_json,
+    extract_read_path,
+    extract_search_pattern,
+    find_workspace_root,
+    ix_healthy,
+    read_event,
+)
+
+
+def main() -> None:
+    event = read_event()
+    workspace_root = find_workspace_root(event.get("cwd"))
+    if not ix_healthy(workspace_root):
+        return
+
+    tool_input = event.get("tool_input", {})
+    command = str(tool_input.get("command") or tool_input.get("cmd") or "")
+    if not command:
+        return
+
+    message = None
+
+    pattern = extract_search_pattern(command)
+    if pattern:
+        message = build_search_message(pattern, workspace_root)
+    else:
+        file_path = extract_read_path(command)
+        if file_path:
+            message = build_read_message(file_path, workspace_root)
+
+    if not message:
+        return
+
+    emit_json({"decision": "allow", "systemMessage": message})
+
+
+if __name__ == "__main__":
+    main()
