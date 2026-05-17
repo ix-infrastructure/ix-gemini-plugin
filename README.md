@@ -18,6 +18,7 @@ High-level cognitive skills:
 
 | Skill | What it does | Key rule |
 |-------|--------------|----------|
+| `ix-help <task or question>` | Route to the right Ix skill or direct `ix` command | Route only; do not execute |
 | `ix-understand [target]` | Build a mental model of a system or the whole repo | Graph only; no code reads |
 | `ix-investigate <symbol>` | Deep dive: what it is, how it connects, execution path | Graph first; one symbol read max |
 | `ix-impact <target>` | Change risk: blast radius, affected systems, test targets | Depth scales with risk |
@@ -72,6 +73,12 @@ cd ix-gemini-plugin
 
 The installer copies the extension to `~/.gemini/extensions/ix-memory/`.
 
+On Windows PowerShell:
+
+```powershell
+.\install.ps1
+```
+
 ### Repo-local install
 
 ```bash
@@ -79,6 +86,22 @@ The installer copies the extension to `~/.gemini/extensions/ix-memory/`.
 ```
 
 This copies the extension to `/path/to/project/.gemini/extensions/ix-memory/`.
+
+PowerShell equivalent:
+
+```powershell
+.\install.ps1 -Repo C:\path\to\project
+```
+
+## Local Validation
+
+Run the local MCP build and test path with:
+
+```bash
+./test-local.sh
+```
+
+This covers the local MCP server surface and skips live Gemini CLI validation when `gemini` is not installed.
 
 ## Repo Guidance
 

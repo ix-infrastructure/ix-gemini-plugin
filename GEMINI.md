@@ -18,22 +18,67 @@ This means Gemini is not a command wrapper. Gemini uses Ix as memory to reason, 
 
 ---
 
+## MCP Tools (primary interface)
+
+The `ix-memory` MCP server exposes these tools. Always prefer MCP tools over shell commands — MCP tools call the runtime API directly, return structured evidence, and include `canonical_revision` so answers are reproducible.
+
+| Tool | When to use |
+|---|---|
+| `ix_status` | Session start — check graph health before any work |
+| `ix_query` (mode: `understand`) | System map, data flows, coupling summary |
+| `ix_query` (mode: `investigate`) | Deep dive on a specific symbol or file |
+| `ix_query` (mode: `impact`) | Blast radius before editing |
+| `ix_query` (mode: `plan`) | Risk-ordered change sequencing |
+| `ix_query` (mode: `debug`) | Root-cause trace from symptom |
+| `ix_query` (mode: `architecture`) | Cohesion, coupling, smells, hotspots |
+| `ix_query` (mode: `docs`) | Generate or look up documentation |
+| `ix_query` (mode: `locate`) | Find files or symbols matching a query |
+| `ix_decide` | **Before writing or editing any file** — get allow/warn/block verdict |
+| `ix_ingest` | **After writing or editing any file** — keep graph current |
+
+### Pre-edit gate (required)
+
+Before writing to any file, call `ix_decide` with the file path and operation:
+
+```
+ix_decide({ paths: ["src/foo.ts"], operation: "edit", context: "Adding retry logic" })
+```
+
+- `allow` → proceed normally
+- `warn` → proceed, but document your rationale
+- `block` → do not proceed without explicit user confirmation
+
+If the runtime is unavailable, `ix_decide` returns `allow` automatically (non-blocking).
+
+### Post-edit ingest (required)
+
+After writing to any file, call `ix_ingest` with all touched paths:
+
+```
+ix_ingest({ paths: ["src/foo.ts", "src/bar.ts"] })
+```
+
+At session end, call `ix_ingest({ paths: [], full_workspace: true })` for a complete graph refresh.
+
+---
+
 ## Behavioral Rules
 
 ### Always
-- Use Ix graph data before reading source code
-- Read at symbol level only with `ix read <symbol>`, never whole files unless the whole file is the explicit subject
-- Use high-level skills (`ix-investigate`, `ix-understand`) not raw command dumps
+- Call `ix_status` at session start to check graph readiness
+- Call `ix_decide` before any file write or edit
+- Call `ix_ingest` after any file write or edit
+- Use `ix_query` MCP tools before reading source code
 - Stop early once you can answer the question
 - Label evidence and distinguish graph-backed facts from inferences
+- Check `canonical_revision` in tool responses — pin it when citing graph data
 
 ### Never
-- Scan entire files unless the whole file is the question
-- Call `ix depends --depth 3+` or `ix trace` without a specific question
+- Skip `ix_decide` before file writes, even for small edits
+- Skip `ix_ingest` after file writes
 - Assume behavior without graph or code evidence
-- Output raw JSON
-- Run `ix map` for exploration
-- Run `ix rank` without both `--by` and `--kind`
+- Output raw JSON — use `preview_markdown` from tool responses
+- Run `ix map` for exploration (use `ix_ingest` instead)
 
 ---
 
@@ -42,16 +87,16 @@ This means Gemini is not a command wrapper. Gemini uses Ix as memory to reason, 
 When answering a question about a codebase:
 
 ```text
-1. Orient       -> ix subsystems or ix overview
-2. Locate       -> ix locate
-3. Explain      -> ix explain
-4. Trace/Depend -> ix trace or ix depends only if needed
-5. Read         -> ix read <symbol> only if implementation detail is still unclear
-6. Synthesize   -> answer the question, cite evidence
-7. Suggest      -> one useful next step
+1. Orient       -> ix_query(mode: "understand") or ix_query(mode: "locate")
+2. Investigate  -> ix_query(mode: "investigate", targets: [symbol])
+3. Impact       -> ix_query(mode: "impact", targets: [file]) if edit is planned
+4. Decide       -> ix_decide(paths, operation) before any write
+5. Act          -> make the change
+6. Ingest       -> ix_ingest(paths) after the change
+7. Synthesize   -> answer citing canonical_revision from tool responses
 ```
 
-Skip steps if earlier steps answer the question. Most questions should stop by step 3.
+Skip steps if earlier steps answer the question. Most read-only questions stop at step 2.
 
 ---
 
@@ -59,12 +104,12 @@ Skip steps if earlier steps answer the question. Most questions should stop by s
 
 | Operation | Rule |
 |---|---|
-| Text search | `--limit 20` cap |
-| Symbol rank | `--top 10` cap, always `--exclude-path test` |
-| Callers/callees | `--limit 15` cap |
-| Dependency tree | `--depth 2` max unless the user asks for deeper |
+| Text search | `ix_text({ limit: 20 })` cap |
+| Symbol rank | `ix_rank({ top: 10 })` cap |
+| Callers/callees | results capped at 15 per call |
+| Dependency tree | `ix_depends({ depth: 2 })` max unless the user asks for deeper |
 | Code reads | Symbol-level only, max 2 per task |
-| Traces | One trace per investigation |
+| Traces | One `ix_trace` per investigation |
 
 ---
 
@@ -72,6 +117,7 @@ Skip steps if earlier steps answer the question. Most questions should stop by s
 
 | Skill | Purpose | When to use |
 |---|---|---|
+| `ix-help <task or question>` | Route to the best Ix skill or direct `ix` command | When the right entry point is unclear |
 | `ix-understand [target]` | Mental model of a system | Onboarding, architecture questions, "how does X work?" |
 | `ix-investigate <symbol>` | Deep dive into a component | Before modifying, explaining, or debugging something |
 | `ix-impact <target>` | Change risk analysis | Before any non-trivial edit |
@@ -98,9 +144,9 @@ The `agents/` directory carries reusable playbook docs:
 The Gemini CLI extension uses these hook events:
 - `SessionStart` injects Ix operating guidance
 - `BeforeAgent` injects the Ix Pro briefing once per 10 minutes
-- `BeforeTool` for `shell` front-runs `grep`/`rg` and read-style shell commands with Ix context
-- `AfterTool` for `shell` triggers background `ix map` after file-modifying commands
-- `SessionEnd` runs `ix map` asynchronously
+- `BeforeTool` for `run_shell_command` front-runs `grep`/`rg` and read-style shell commands with Ix context
+- `AfterTool` for `run_shell_command` triggers `ix_ingest` after file-modifying commands
+- `SessionEnd` calls `ix_ingest({ paths: [], full_workspace: true })` for a complete graph refresh
 
 ---
 
@@ -108,6 +154,22 @@ The Gemini CLI extension uses these hook events:
 
 ```text
 gemini-extension.json            - extension manifest
+mcp/
+  server.ts                      - MCP server entry point (stdio transport)
+  lib/
+    config.ts                    - runtime URL, surface ID, timeouts
+    errors.ts                    - IxError class, error log
+    parser.ts                    - ToolResult types (canonical_revision, preview_markdown)
+    runtime-client.ts            - HTTP client for Ix Core Runtime API
+  shared/
+    secrets.ts                   - secret redaction
+  tools/
+    ix_query.ts                  - unified query (9 modes)
+    ix_decide.ts                 - pre-edit policy gate
+    ix_ingest.ts                 - post-edit graph ingest
+    ix_status.ts                 - health and graph readiness check
+.gemini/
+  settings.json                  - mcpServers config (example / project override)
 hooks/
   common.py                      - shared helpers
   session_start.py               - startup guidance
@@ -116,19 +178,22 @@ hooks/
   after_tool.py                  - background graph refresh on writes
   session_end.py                 - session end graph refresh
 skills/
-  ix-understand.toml
-  ix-investigate.toml
-  ix-impact.toml
-  ix-plan.toml
-  ix-debug.toml
-  ix-architecture.toml
-  ix-docs.toml
+  ix-help/SKILL.md
+  ix-understand/SKILL.md
+  ix-investigate/SKILL.md
+  ix-impact/SKILL.md
+  ix-plan/SKILL.md
+  ix-debug/SKILL.md
+  ix-architecture/SKILL.md
+  ix-docs/SKILL.md
 agents/
   ix-explorer.md
   ix-system-explorer.md
   ix-bug-investigator.md
   ix-safe-refactor-planner.md
   ix-architecture-auditor.md
+install.sh
+install.ps1
 ```
 
 ---

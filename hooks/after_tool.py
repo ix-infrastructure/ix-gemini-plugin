@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from common import (
-    emit_json,
     find_workspace_root,
     ix_healthy,
+    log,
     read_event,
     spawn_background_ix_map,
 )
@@ -27,16 +27,19 @@ def _is_write_command(command: str) -> bool:
 
 
 def main() -> None:
-    event = read_event()
-    workspace_root = find_workspace_root(event.get("cwd"))
-    if not ix_healthy(workspace_root):
-        return
+    try:
+        event = read_event()
+        workspace_root = find_workspace_root(event.get("cwd"))
+        if not ix_healthy(workspace_root):
+            return
 
-    tool_input = event.get("tool_input", {})
-    command = str(tool_input.get("command") or tool_input.get("cmd") or "")
+        tool_input = event.get("tool_input", {})
+        command = str(tool_input.get("command") or tool_input.get("cmd") or "")
 
-    if command and _is_write_command(command):
-        spawn_background_ix_map(workspace_root)
+        if command and _is_write_command(command):
+            spawn_background_ix_map(workspace_root)
+    except Exception as exc:
+        log(f"[ix] after_tool hook error (non-fatal): {exc}")
 
 
 if __name__ == "__main__":
