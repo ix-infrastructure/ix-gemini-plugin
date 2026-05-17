@@ -549,10 +549,13 @@ def build_read_message(file_path: str, cwd: str | Path | None) -> str | None:
 
 
 def spawn_background_ix_map(cwd: str | Path | None) -> None:
-    subprocess.Popen(
-        ["ix", "map"],
-        cwd=str(cwd) if cwd else None,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    try:
+        subprocess.Popen(
+            ["ix", "map"],
+            cwd=str(cwd) if cwd else None,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        log(f"[ix] spawn_background_ix_map failed (non-fatal): {exc}")

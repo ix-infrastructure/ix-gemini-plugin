@@ -2,40 +2,14 @@
   "name": "ix-memory",
   "version": "1.0.0",
   "description": "Ix Memory integration — transforms Gemini CLI into a graph-reasoning agent with cognitive skills for understanding, investigation, impact analysis, planning, debugging, architecture auditing, and deep documentation synthesis.",
-  "author": {
-    "name": "Ix Memory"
-  },
-  "hooks": [
-    {
-      "event": "SessionStart",
-      "command": "python3 ${extensionPath}/hooks/session_start.py"
-    },
-    {
-      "event": "BeforeAgent",
-      "command": "python3 ${extensionPath}/hooks/before_agent.py"
-    },
-    {
-      "event": "BeforeTool",
-      "matcher": "shell",
-      "command": "python3 ${extensionPath}/hooks/before_tool.py"
-    },
-    {
-      "event": "AfterTool",
-      "matcher": "shell",
-      "command": "python3 ${extensionPath}/hooks/after_tool.py"
-    },
-    {
-      "event": "SessionEnd",
-      "command": "python3 ${extensionPath}/hooks/session_end.py"
+  "mcpServers": {
+    "ix-memory": {
+      "command": "node",
+      "args": ["dist/server.js"],
+      "cwd": "${extensionPath}/mcp",
+      "env": {
+        "IX_RUNTIME_URL": "http://localhost:8090"
+      }
     }
-  ],
-  "skills": [
-    "skills/ix-understand.toml",
-    "skills/ix-investigate.toml",
-    "skills/ix-impact.toml",
-    "skills/ix-plan.toml",
-    "skills/ix-debug.toml",
-    "skills/ix-architecture.toml",
-    "skills/ix-docs.toml"
-  ]
+  }
 }
