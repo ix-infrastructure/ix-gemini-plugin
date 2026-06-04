@@ -79,7 +79,7 @@ Hard limit: 2 `ix read` calls. If the bug is still unclear, report the candidate
 ### Step 6 — Check for related issues (if ix pro available)
 
 ```bash
-ix bugs --status open --format json
+ix bugs --status open --format llm
 ```
 
 Are there existing bug reports related to this component?
