@@ -22,7 +22,7 @@ If `$ARGUMENTS` is empty, return this menu:
 - `ix-debug <symptom>` — root-cause analysis for bugs
 - `ix-architecture [scope]` — design health and structural smells
 - `ix-docs <target>` — onboarding or reference documentation
-- Raw `ix` commands — direct lookups like `ix locate <symbol> --format json`
+- Raw `ix` commands — direct lookups like `ix locate <symbol> --format llm`
 
 If `$ARGUMENTS` is non-empty, classify the request and recommend exactly one best starting point:
 - Architecture, onboarding, or "how does X work" -> `ix-understand <target>`
@@ -33,11 +33,11 @@ If `$ARGUMENTS` is non-empty, classify the request and recommend exactly one bes
 - Design quality, coupling, complexity, or smells -> `ix-architecture <scope>`
 - Documentation or onboarding/reference docs -> `ix-docs <target>`
 - Simple lookup requests:
-  - exact definition -> `ix locate <symbol> --format json`
-  - fuzzy search -> `ix text "<term>" --limit 10 --format json`
-  - incoming callers -> `ix callers <symbol> --limit 15 --format json`
-  - outgoing callees -> `ix callees <symbol> --limit 15 --format json`
-  - path inventory -> `ix inventory --kind file --path <path> --format json`
+  - exact definition -> `ix locate <symbol> --format llm`
+  - fuzzy search -> `ix text "<term>" --limit 10 --format llm`
+  - incoming callers -> `ix callers <symbol> --limit 15 --format llm`
+  - outgoing callees -> `ix callees <symbol> --limit 15 --format llm`
+  - path inventory -> `ix inventory --kind file --path <path> --format llm`
 
 Return exactly this block and nothing else:
 
