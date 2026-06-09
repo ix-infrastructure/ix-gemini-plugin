@@ -1,12 +1,12 @@
 # ix-gemini-plugin
 
-A Gemini CLI extension that turns Gemini into a graph-reasoning engineering agent using [Ix Memory](https://github.com/ix-infrastructure/IX-Memory) as its structured memory backend.
+A Gemini CLI extension that turns Gemini into a graph-reasoning engineering agent using [Ix Memory](https://github.com/ix-infrastructure/Ix) as its structured memory backend.
 
 Gemini + Ix = reasoning engine + persistent code knowledge graph. Skills are cognitive abstractions, not CLI wrappers.
 
 ## Requirements
 
-- [Ix Memory](https://github.com/ix-infrastructure/IX-Memory) installed and running (`ix status` returns ok)
+- [Ix Memory](https://github.com/ix-infrastructure/Ix) installed and running (`ix status` returns ok)
 - `python3` in PATH for hook scripts
 - `ripgrep` (`rg`) is recommended
 
