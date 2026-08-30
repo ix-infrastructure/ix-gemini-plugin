@@ -40,6 +40,13 @@ export const IX_FAIL_CLOSED = envBool("IX_FAIL_CLOSED", false);
 
 export const TIMEOUT_DEFAULT_MS = 15_000;
 export const TIMEOUT_INGEST_MS = 60_000;
+/**
+ * A full-workspace `ix map` is a whole-repo reindex, not a file ingest. On any
+ * checkout with dependencies installed it routinely runs for minutes, so the
+ * 60s ingest budget guaranteed a timeout (#25). Only the `full_workspace` CLI
+ * fallback uses this; a scoped ingest stays on TIMEOUT_INGEST_MS.
+ */
+export const TIMEOUT_MAP_MS = 300_000;
 export const TIMEOUT_STATUS_MS = 5_000;
 export const TIMEOUT_DECIDE_MS = 10_000;
 export const TIMEOUT_CLI_MIN_MS = 15_000;
