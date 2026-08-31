@@ -26,14 +26,28 @@ let dir: string;
 
 before(() => {
   dir = mkdtempSync(join(tmpdir(), "ix-gemini-stub-"));
+
+  // The body lives in its own file and the stub cats it, rather than being
+  // interpolated into the script. Quoting a JSON literal into two shells is
+  // both easy to get wrong and, when done by hand, indistinguishable from a
+  // sanitizer -- CodeQL flagged an earlier `replace(/"/g, ...)` here as
+  // incomplete escaping, and it was right: it did not handle backslashes.
+  const bodyPath = join(dir, "refusal.json");
+  writeFileSync(
+    bodyPath,
+    JSON.stringify({
+      error: "unresolved_target",
+      message: 'No entity found matching "Nope".',
+    }),
+  );
+
   const isWindows = process.platform === "win32";
   const stub = join(dir, isWindows ? "ix.cmd" : "ix");
-  const body = '{"error":"unresolved_target","message":"No entity found matching \\"Nope\\"."}';
   writeFileSync(
     stub,
     isWindows
-      ? `@echo off\r\necho ${body.replace(/"/g, '\\"')}\r\nexit /b 1\r\n`
-      : `#!/bin/sh\ncat <<'JSON'\n${body}\nJSON\nexit 1\n`,
+      ? `@echo off\r\ntype "${bodyPath}"\r\nexit /b 1\r\n`
+      : `#!/bin/sh\ncat "${bodyPath}"\nexit 1\n`,
   );
   if (!isWindows) chmodSync(stub, 0o755);
   process.env["IX_BIN"] = stub;
