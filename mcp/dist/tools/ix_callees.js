@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { runIx } from "../lib/cli.js";
+import { cliStructuredError, runIx } from "../lib/cli.js";
 import { parseIxJson } from "../lib/parser.js";
 import { graphQueryRuntime } from "../lib/runtime-client.js";
 import { wrapErr, wrapOk } from "../lib/parser.js";
@@ -34,6 +34,12 @@ async function runRelation(toolName, operation, input) {
         if (cliResult.ok) {
             const raw = parseIxJson(cliResult.stdout);
             return buildRelationResult(toolName, input, raw, cliResult.durationMs);
+        }
+        // The CLI ran and refused for a reason of its own -- report that rather
+        // than the runtime's "unavailable", which is merely how we got here.
+        const cliError = cliStructuredError(cliResult);
+        if (cliError) {
+            return wrapErr(toolName, input, cliError);
         }
         return wrapErr(toolName, input, {
             code: response.code,

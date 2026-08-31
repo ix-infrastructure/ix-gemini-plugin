@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { runIx } from "../lib/cli.js";
+import { cliStructuredError, runIx } from "../lib/cli.js";
 import { parseIxJson } from "../lib/parser.js";
 import { graphQueryRuntime } from "../lib/runtime-client.js";
 import { wrapErr, wrapOk, type ToolResult } from "../lib/parser.js";
@@ -87,6 +87,13 @@ async function runLocate(input: LocateInput): Promise<ToolResult> {
         undefined,
         cliResult.durationMs,
       );
+    }
+
+    // The CLI ran and refused for a reason of its own -- report that rather
+    // than the runtime's "unavailable", which is merely how we got here.
+    const cliError = cliStructuredError(cliResult);
+    if (cliError) {
+      return wrapErr(TOOL_NAME, input as unknown as Record<string, unknown>, cliError);
     }
 
     return wrapErr(TOOL_NAME, input as unknown as Record<string, unknown>, {

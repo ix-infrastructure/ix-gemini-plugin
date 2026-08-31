@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { runIx } from "../lib/cli.js";
+import { cliStructuredError, runIx } from "../lib/cli.js";
 import { parseIxJson } from "../lib/parser.js";
 import { insightsDeriveRuntime } from "../lib/runtime-client.js";
 import { wrapErr, wrapOk } from "../lib/parser.js";
@@ -59,6 +59,12 @@ async function runRank(input) {
                 },
                 fallback: "cli",
             }, summaryText, raw.preview_markdown ?? buildRankPreview(by, kind, normalized), raw.canonical_revision ?? null, undefined, cliResult.durationMs);
+        }
+        // The CLI ran and refused for a reason of its own -- report that rather
+        // than the runtime's "unavailable", which is merely how we got here.
+        const cliError = cliStructuredError(cliResult);
+        if (cliError) {
+            return wrapErr(TOOL_NAME, { by, kind, top, path: input.path }, cliError);
         }
         return wrapErr(TOOL_NAME, { by, kind, top, path: input.path }, {
             code: response.code,
