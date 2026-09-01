@@ -62,15 +62,40 @@ jobs:
 
   # ── Aggregate gate ───────────────────────────────────────────────────────
   # One stable required-status-check context. Fails if validate failed OR was
+  # ── Hook tests ───────────────────────────────────────────────────────────
+  # The hook scripts are the part of this plugin that runs on every tool call,
+  # and nothing gated on them until #26. They shell out to the real hook
+  # scripts, so they need no Gemini session and no backend.
+  hook-tests:
+    name: Hook tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      # Discovery, deliberately: it is the invocation the sibling plugin repos
+      # use, and it reported "NO TESTS RAN" here -- exit 0 -- until these tests
+      # became TestCase classes. Keeping the same invocation means a regression
+      # back to bare functions shows up as 0 tests rather than a green job.
+      - name: Run hook tests
+        run: python -m unittest discover -s hooks/tests -p 'test_*.py' -v
+
   # skipped/cancelled, so the job graph can be reshaped without orphaning the
   # required check.
   ci-success:
     name: CI Passed
     if: always()
-    needs: [validate]
+    needs: [validate, hook-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded
         run: |
           echo "validate=${{ needs.validate.result }}"
+          echo "hook-tests=${{ needs.hook-tests.result }}"
           [ "${{ needs.validate.result }}" = "success" ]
+          [ "${{ needs.hook-tests.result }}" = "success" ]
