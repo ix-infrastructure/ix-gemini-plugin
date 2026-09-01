@@ -20,6 +20,10 @@ PRO_CACHE_PATH = CACHE_DIR / "ix-pro.json"
 ERROR_STORE = Path.home() / ".local" / "share" / "ix" / "plugin" / "errors"
 
 HEALTH_TTL_SECONDS = 30
+# Whether @ix/pro is installed changes only when someone installs or removes it,
+# and the probe now runs a real command rather than `--help`, so it is cached far
+# longer than the health check it used to borrow its TTL from.
+PRO_TTL_SECONDS = 3600
 BRIEFING_TTL_SECONDS = 600
 
 SHELL_OPERATORS = ("|", "&&", "||", ";", "$(", "`")
@@ -135,6 +139,18 @@ def ix_healthy(cwd: str | Path | None) -> bool:
     return ok
 
 
+def _is_pro_stub_response(result: subprocess.CompletedProcess[str]) -> bool:
+    """True when ix answered with the Pro stub — a definitive 'not a Pro install'.
+
+    The stub's contract is the literal string `The '<name>' command requires Ix
+    Pro.` on exit 1. Matching it is what separates "Pro is absent" from "the
+    probe happened to fail", which is the difference between a cacheable answer
+    and one that must not be cached.
+    """
+    blob = f"{result.stdout or ''}{result.stderr or ''}"
+    return "requires Ix Pro" in blob
+
+
 def ix_pro_available(cwd: str | Path | None) -> bool:
     if PRO_CACHE_PATH.exists():
         try:
@@ -144,10 +160,32 @@ def ix_pro_available(cwd: str | Path | None) -> bool:
         if isinstance(cached, dict):
             timestamp = float(cached.get("timestamp", 0))
             ok = bool(cached.get("ok", False))
-            if time.time() - timestamp < HEALTH_TTL_SECONDS:
+            if time.time() - timestamp < PRO_TTL_SECONDS:
                 return ok
-    result = run_command(["ix", "briefing", "--help"], cwd=cwd, timeout=8)
-    ok = bool(result and result.returncode == 0)
+    # Probe with the real command, not `--help`.
+    #
+    # Pro commands are always *registered*: without @ix/pro the CLI installs a
+    # stub for each one whose action prints "The 'briefing' command requires Ix
+    # Pro." and sets exit 1. But `--help` is handled by the arg parser before any
+    # action runs, so `ix briefing --help` exits 0 on a stub exactly as it does
+    # on the real command. Probing with it reported Pro as available on every
+    # OSS install, and the hooks then ran Pro commands that could only fail.
+    #
+    # Running the command itself is the discriminator: the stub exits 1, the real
+    # command exits 0. ix_healthy() is checked before this (before_agent.py), so
+    # the backend is already known reachable.
+    result = run_command(["ix", "briefing", "--format", "json"], cwd=cwd, timeout=8)
+    if result is None:
+        # Could not run ix at all (timeout, OSError). Says nothing about Pro.
+        return False
+    ok = result.returncode == 0
+    if not ok and not _is_pro_stub_response(result):
+        # A non-zero exit that is NOT the Pro stub is a transient failure — a
+        # backend hiccup, an expired session, a slow first call. Returning False
+        # for this run is right, but caching it is not: PRO_TTL_SECONDS is an
+        # hour, so one blip would suppress every Pro feature for a Pro user
+        # until it expires. Leave the cache alone and re-probe next time.
+        return False
     _write_cache(PRO_CACHE_PATH, {"timestamp": time.time(), "ok": ok})
     return ok
 

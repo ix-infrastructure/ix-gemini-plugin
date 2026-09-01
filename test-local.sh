@@ -10,6 +10,9 @@ echo "==> Building MCP server"
 echo "==> Running local MCP tests"
 (cd "$MCP_DIR" && npm test --silent)
 
+echo "==> Running hook unit tests"
+python3 "$SCRIPT_DIR/hooks/tests/test_pro_detection.py"
+
 if command -v gemini >/dev/null 2>&1; then
   echo "==> Gemini CLI detected"
   echo "Live Gemini validation remains manual: run the roadmap checks for hooks, GEMINI.md injection, and golden cases."
