@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { TIMEOUT_INGEST_MS } from "../lib/config.js";
+import { TIMEOUT_INGEST_MS, TIMEOUT_MAP_MS } from "../lib/config.js";
 import { runIx } from "../lib/cli.js";
 import { parseIxJson } from "../lib/parser.js";
 import { ingestRuntime } from "../lib/runtime-client.js";
@@ -48,6 +48,58 @@ interface StatusCliResponse {
   staleFiles?: number;
 }
 
+interface IngestCliResponse {
+  filesProcessed?: number;
+  patchesApplied?: number;
+  commitErrors?: number;
+  skipReasons?: { parseError?: number };
+}
+
+interface ScopedIngestResult {
+  ok: boolean;
+  filesIndexed: number;
+  errors: string[];
+  durationMs: number;
+}
+
+/**
+ * Ingest exactly the paths that changed.
+ *
+ * The previous fallback ran a bare `ix map` — a full workspace reindex — no
+ * matter how many paths were requested, under the 60s ingest budget. On any
+ * checkout with dependencies installed that always timed out, so the fallback
+ * could never fire and every edit reported "runtime unavailable" instead (#25).
+ *
+ * `ix ingest` takes one path per invocation, so walk them. A post-edit hook
+ * normally passes one.
+ */
+async function runScopedIngest(paths: string[]): Promise<ScopedIngestResult> {
+  let filesIndexed = 0;
+  let durationMs = 0;
+  const errors: string[] = [];
+
+  for (const path of paths) {
+    const result = await runIx(["ingest", path], { timeout: TIMEOUT_INGEST_MS });
+    durationMs += result.durationMs;
+
+    if (!result.ok) {
+      errors.push(`${path}: ${result.stderr.trim() || "ix ingest failed"}`);
+      continue;
+    }
+
+    const raw = parseIxJson(result.stdout) as IngestCliResponse;
+    filesIndexed += raw.filesProcessed ?? 0;
+    const parseErrors = raw.skipReasons?.parseError ?? 0;
+    const commitErrors = raw.commitErrors ?? 0;
+    if (parseErrors > 0) errors.push(`${path}: ${parseErrors} file(s) failed to parse`);
+    if (commitErrors > 0) errors.push(`${path}: ${commitErrors} patch(es) failed to commit`);
+  }
+
+  // A path that failed outright means the graph does not have that edit. Parse
+  // and commit errors are reported but do not fail the ingest as a whole.
+  return { ok: errors.length === 0 || filesIndexed > 0, filesIndexed, errors, durationMs };
+}
+
 export function register(server: McpServer): void {
   registerIxTool(server, {
     name: TOOL_NAME,
@@ -73,9 +125,16 @@ async function runIngest(input: IngestInput): Promise<ToolResult> {
   const response = await ingestRuntime<IngestResponse>(body);
 
   if (!response.ok) {
-    const cliResult = await runIx(["map"], { timeout: TIMEOUT_INGEST_MS });
+    // A full-workspace request is genuinely a remap; a targeted one must only
+    // ingest the paths it was given. Sending every edit through `ix map` is what
+    // made this fallback unreachable (#25).
+    const scoped = input.full_workspace ? null : await runScopedIngest(input.paths);
+    const cliResult = scoped
+      ? { ok: scoped.ok, stdout: "", stderr: "", durationMs: scoped.durationMs }
+      : await runIx(["map"], { timeout: TIMEOUT_MAP_MS });
+
     if (cliResult.ok) {
-      const raw = parseIxJson(cliResult.stdout) as MapCliResponse;
+      const raw = scoped ? {} as MapCliResponse : parseIxJson(cliResult.stdout) as MapCliResponse;
       const statusResult = await runIx(["status"]);
       const status = statusResult.ok
         ? parseIxJson(statusResult.stdout) as StatusCliResponse
@@ -83,7 +142,7 @@ async function runIngest(input: IngestInput): Promise<ToolResult> {
       const canonical_revision = raw.map_rev ?? status?.currentRev ?? null;
       const filesIndexed = input.full_workspace
         ? raw.file_count ?? input.paths.length
-        : input.paths.length;
+        : scoped?.filesIndexed ?? input.paths.length;
       const stale = (status?.staleFiles ?? 0) > 0;
       const summary = input.full_workspace
         ? `Full workspace reindex completed at revision ${canonical_revision ?? "unknown"}`
@@ -93,7 +152,7 @@ async function runIngest(input: IngestInput): Promise<ToolResult> {
           ? "## ix_ingest: Full workspace reindex"
           : `## ix_ingest: CLI reindex after ${filesIndexed} file${filesIndexed === 1 ? "" : "s"} changed`,
         "",
-        "**Mode:** CLI fallback (`ix map`)",
+        `**Mode:** CLI fallback (\`${input.full_workspace ? "ix map" : "ix ingest"}\`)`,
         raw.outcome ? `**Outcome:** ${raw.outcome}` : "",
         canonical_revision !== null ? `**Graph revision:** ${canonical_revision}` : "",
         status?.lastIngestAt ? `**Last ingest:** ${status.lastIngestAt}` : "",
@@ -112,7 +171,7 @@ async function runIngest(input: IngestInput): Promise<ToolResult> {
           files_indexed: filesIndexed,
           job_id: null,
           status: "complete",
-          errors: [],
+          errors: scoped?.errors ?? [],
           runtime_available: true,
           fallback: "cli",
           map_outcome: raw.outcome ?? null,

@@ -102,7 +102,7 @@ test("ix_decide falls back to local CLI health when runtime HTTP is unavailable"
   }
 });
 
-test("ix_ingest falls back to ix map when runtime HTTP is unavailable", async () => {
+test("ix_ingest falls back to a scoped ix ingest when runtime HTTP is unavailable", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     throw new Error("connect ECONNREFUSED");
@@ -125,6 +125,10 @@ test("ix_ingest falls back to ix map when runtime HTTP is unavailable", async ()
     assert.equal(data["runtime_available"], true);
     assert.equal(data["ingested"], true);
     assert.equal(typeof response["canonical_revision"], "number");
+    // #25: the fallback must ingest the requested paths, not remap the whole
+    // workspace — a full remap cannot finish inside the ingest budget once
+    // dependencies are installed, so this branch was unreachable.
+    assert.match(String(response["preview_markdown"]), /CLI fallback \(`ix ingest`\)/);
   } finally {
     globalThis.fetch = originalFetch;
   }
