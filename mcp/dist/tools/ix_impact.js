@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { runIx } from "../lib/cli.js";
+import { cliStructuredError, runIx } from "../lib/cli.js";
 import { parseIxJson } from "../lib/parser.js";
 import { queryRuntime } from "../lib/runtime-client.js";
 import { wrapErr, wrapOk } from "../lib/parser.js";
@@ -59,6 +59,12 @@ async function runImpact(input) {
                 },
                 fallback: "cli",
             }, `Risk: ${riskLevel} — ${raw.riskSummary ?? `${effectiveDependents} dependents`}`, buildImpactPreview(input.target, riskLevel, raw.riskSummary, effectiveDependents, hotspots), null, undefined, cliResult.durationMs);
+        }
+        // The CLI ran and refused for a reason of its own -- report that rather
+        // than the runtime's "unavailable", which is merely how we got here.
+        const cliError = cliStructuredError(cliResult);
+        if (cliError) {
+            return wrapErr(TOOL_NAME, input, cliError);
         }
         return wrapErr(TOOL_NAME, input, {
             code: response.code,

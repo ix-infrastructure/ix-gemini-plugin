@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { runIx } from "../lib/cli.js";
+import { cliStructuredError, runIx } from "../lib/cli.js";
 import { parseIxJson } from "../lib/parser.js";
 import { graphQueryRuntime } from "../lib/runtime-client.js";
 import { wrapErr, wrapOk } from "../lib/parser.js";
@@ -49,6 +49,12 @@ async function runLocate(input) {
                 ? `Resolved ${target.name ?? input.symbol} to ${target.path ?? "unknown path"}`
                 : `No graph-backed match found for ${input.symbol}`;
             return wrapOk(TOOL_NAME, input, data, summary, raw.preview_markdown ?? buildLocatePreview(input.symbol, match, data.system_path), raw.canonical_revision ?? null, undefined, cliResult.durationMs);
+        }
+        // The CLI ran and refused for a reason of its own -- report that rather
+        // than the runtime's "unavailable", which is merely how we got here.
+        const cliError = cliStructuredError(cliResult);
+        if (cliError) {
+            return wrapErr(TOOL_NAME, input, cliError);
         }
         return wrapErr(TOOL_NAME, input, {
             code: response.code,
