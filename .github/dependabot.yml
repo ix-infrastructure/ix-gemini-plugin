@@ -1,8 +1,5 @@
 version: 2
 updates:
-  # This repo ships markdown + JSON manifests + shell install scripts and has no
-  # application package manager in the repo root, so the only ecosystem to keep
-  # current is the pinned GitHub Actions in .github/workflows.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -10,3 +7,64 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # The comment that used to sit above the github-actions entry said this repo
+  # has no application package manager "in the repo root". True, and it is why
+  # only that ecosystem was configured -- but mcp/ IS one: package.json,
+  # tsconfig.json, a tsc build, a tsx test suite, and two RUNTIME dependencies.
+  #
+  # The consequence is narrow but real. Dependabot SECURITY updates read the
+  # dependency graph and need no entry here, which is why the 28 alerts this
+  # repo has seen were all fixed -- the lock currently resolves fast-uri 3.1.7
+  # and qs 6.16.0, both clean. VERSION updates DO need an entry, so without
+  # this the mcp tree only ever moved when something in it became a CVE.
+  #
+  # ix-cursor-plugin had the identical gap and it cost more there: its lock was
+  # left stale by a server removal, so Dependabot alerted on packages nothing
+  # installed and its security job failed five times with no manifest to edit.
+  - package-ecosystem: npm
+    directory: /mcp
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # Toolchain majors need a deliberate, tested migration, not an auto-bump.
+      # Same policy as ix-openclaw-plugin.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # zod is not an ordinary runtime dependency here: every tool's
+      # `inputSchema` is built from `z` (mcp/tools/*.ts, via the
+      # `zod-compat` bridge in tools/base.ts), and that object is what the
+      # server serialises into the `tools/list` response. zod 4 changes the
+      # emitted JSON Schema -- `additionalProperties` stops being written --
+      # so a major would silently reshape the contract every MCP client reads
+      # to decide how to call these tools. Nothing in this repo's tests
+      # asserts on the serialised schema, so it would go green.
+      #
+      # Pinned to majors only: 3.x patches and minors still flow.
+      - dependency-name: "zod"
+        update-types: ["version-update:semver-major"]
+      # @modelcontextprotocol/sdk belongs here for the SAME reason, and is the
+      # more load-bearing half of the pair: it is the SDK, not zod, that owns
+      # the serialization. It bundles zod-to-json-schema and picks the
+      # converter, so the `additionalProperties` behaviour described above is
+      # the SDK's to change -- and it permits zod 4 already
+      # ("zod": "^3.25 || ^4.0" in its deps AND peerDeps), so the zod ignore
+      # alone does not pin the output shape.
+      #
+      # It is also the one whose breakage is least likely to be caught.
+      # mcp/tools/base.ts:37 registers through
+      # `(server.tool as unknown as (...) => unknown).bind(server)` -- that cast
+      # defeats type checking of the registration API entirely, so an SDK major
+      # that renames or reshapes `server.tool` compiles clean and fails at
+      # spawn. Without this entry the new production-dependencies group would
+      # propose SDK majors automatically.
+      - dependency-name: "@modelcontextprotocol/sdk"
+        update-types: ["version-update:semver-major"]
+    groups:
+      dev-dependencies:
+        dependency-type: development
+      production-dependencies:
+        dependency-type: production

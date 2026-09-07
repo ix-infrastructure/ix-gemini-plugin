@@ -87,15 +87,64 @@ jobs:
 
   # skipped/cancelled, so the job graph can be reshaped without orphaning the
   # required check.
+  # ── mcp/ build gate ─────────────────────────────────────────────────
+  # Added alongside the `npm` Dependabot entry for /mcp, because that entry
+  # opens a weekly stream of dependency PRs and nothing here ran npm at all --
+  # validate is shellcheck + JSON, hook-tests is Python. Every one of those PRs
+  # would have been green while proving nothing.
+  #
+  # This matters more here than in ix-cursor-plugin: mcp/dist is NOT committed
+  # in this repo, so install.sh:106 runs `npm ci && npm run build` on the user's
+  # machine at install time. A bump that breaks `tsc` breaks every install, and
+  # without this job there is no signal anywhere before that.
+  mcp:
+    name: mcp build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mcp/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: mcp
+
+      # `npm ci` does NOT catch a lock whose root requires packages the manifest
+      # no longer does -- measured on ix-cursor-plugin, where exactly that drift
+      # left 5 Dependabot alerts open that no PR could close, and `npm ci` still
+      # exited 0. Regenerating and diffing is what sees it.
+      - name: Lockfile is in sync with package.json
+        run: |
+          npm install --package-lock-only --no-audit --no-fund
+          git diff --exit-code -- package-lock.json
+        working-directory: mcp
+
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: mcp
+
+      # The same command install.sh:106 runs on the user's machine.
+      - name: Build
+        run: npm run build
+        working-directory: mcp
+
   ci-success:
     name: CI Passed
     if: always()
-    needs: [validate, hook-tests]
+    needs: [validate, hook-tests, mcp]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded
         run: |
           echo "validate=${{ needs.validate.result }}"
           echo "hook-tests=${{ needs.hook-tests.result }}"
+          echo "mcp=${{ needs.mcp.result }}"
           [ "${{ needs.validate.result }}" = "success" ]
           [ "${{ needs.hook-tests.result }}" = "success" ]
+          [ "${{ needs.mcp.result }}" = "success" ]
