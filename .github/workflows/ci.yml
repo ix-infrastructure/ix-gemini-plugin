@@ -60,8 +60,6 @@ jobs:
             -not -path './.git/*' -not -path '*/node_modules/*' -not -path '*/dist/*' -print0)
           exit $fail
 
-  # ── Aggregate gate ───────────────────────────────────────────────────────
-  # One stable required-status-check context. Fails if validate failed OR was
   # ── Hook tests ───────────────────────────────────────────────────────────
   # The hook scripts are the part of this plugin that runs on every tool call,
   # and nothing gated on them until #26. They shell out to the real hook
@@ -85,8 +83,6 @@ jobs:
       - name: Run hook tests
         run: python -m unittest discover -s hooks/tests -p 'test_*.py' -v
 
-  # skipped/cancelled, so the job graph can be reshaped without orphaning the
-  # required check.
   # ── mcp/ build gate ─────────────────────────────────────────────────
   # Added alongside the `npm` Dependabot entry for /mcp, because that entry
   # opens a weekly stream of dependency PRs and nothing here ran npm at all --
@@ -134,6 +130,14 @@ jobs:
         run: npm run build
         working-directory: mcp
 
+  # ── Aggregate gate ───────────────────────────────────────────────────────
+  # One stable required-status-check context. Fails if any needed job failed OR
+  # was skipped/cancelled, so the job graph can be reshaped without orphaning
+  # the required check.
+  #
+  # This comment used to be split in half around the hook-tests job, with the
+  # tail sitting above whatever was added last -- so adding the mcp job left it
+  # heading that instead. Reunited here, where it describes the job it is about.
   ci-success:
     name: CI Passed
     if: always()

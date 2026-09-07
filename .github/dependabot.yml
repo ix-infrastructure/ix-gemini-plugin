@@ -61,6 +61,14 @@ updates:
       # that renames or reshapes `server.tool` compiles clean and fails at
       # spawn. Without this entry the new production-dependencies group would
       # propose SDK majors automatically.
+      #
+      # Be clear about what this does NOT do: it is major-scoped, and nothing
+      # above is major-specific. An SDK 1.x MINOR that changes the bundled
+      # zod-to-json-schema, or switches converter, reshapes `tools/list` just as
+      # thoroughly and flows straight through -- past a job that only runs tsc,
+      # because no test asserts on the serialised schema. So this pins the blast
+      # radius, not the contract. Pinning the contract means asserting on a
+      # tools/list snapshot, which is the real fix and is not this change.
       - dependency-name: "@modelcontextprotocol/sdk"
         update-types: ["version-update:semver-major"]
     groups:
