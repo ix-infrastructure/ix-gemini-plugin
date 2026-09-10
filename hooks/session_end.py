@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ix Infrastructure Inc.
+
 """SessionEnd hook — refresh the Ix graph when the session ends."""
 from __future__ import annotations
 
