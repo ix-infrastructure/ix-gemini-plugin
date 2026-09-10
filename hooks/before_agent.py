@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 Ix Infrastructure INC
+# Copyright 2026 Ix Infrastructure Inc.
 
 """BeforeAgent hook — inject Ix Pro session briefing once per 10 minutes."""
 from __future__ import annotations

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 Ix Infrastructure INC
+# Copyright 2026 Ix Infrastructure Inc.
 
 """SessionStart hook — inject Ix operating guidance at session start."""
 from __future__ import annotations

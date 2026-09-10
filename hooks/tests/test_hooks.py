@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 Ix Infrastructure INC
+# Copyright 2026 Ix Infrastructure Inc.
 
 """Smoke tests for Gemini hook scripts — verifiable without a live Gemini session."""
 from __future__ import annotations
