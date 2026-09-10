@@ -1,3 +1,5 @@
+// Copyright 2026 Ix Infrastructure INC
+
 import { pathToFileURL } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
