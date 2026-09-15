@@ -1,3 +1,5 @@
+// Copyright 2026 Ix Infrastructure Inc.
+
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { runIx } from "../lib/cli.js";

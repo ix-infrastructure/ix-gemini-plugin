@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ix Infrastructure Inc.
+
 """AfterTool hook — trigger background ix map after file-modifying shell commands."""
 from __future__ import annotations
 

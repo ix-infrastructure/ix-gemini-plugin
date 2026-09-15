@@ -1,3 +1,5 @@
+// Copyright 2026 Ix Infrastructure Inc.
+
 import { appendFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 
