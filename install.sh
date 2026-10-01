@@ -17,18 +17,17 @@ Usage:
 Options:
   --repo DIR    Install to a specific project directory instead of ~/.gemini
   --force       Overwrite existing installation without prompting
-  --no-mcp      Skip the MCP server build (installs extension shell only)
+  --no-mcp      Accepted for compatibility; nothing is built any more
   --help        Show this help message
 
 Requirements:
-  Node.js >= 18 and npm are required to build the MCP server.
-  Use --no-mcp to skip the MCP build if Node.js is not available.
+  The Ix CLI (>= 0.11.0) on PATH. The extension's MCP server is the CLI's
+  own `ix mcp --tools=all`; this plugin no longer ships or builds one.
 EOF
 }
 
 TARGET_BASE="${HOME}/.gemini"
 FORCE=0
-NO_MCP=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -40,7 +39,6 @@ while [[ $# -gt 0 ]]; do
       FORCE=1
       ;;
     --no-mcp)
-      NO_MCP=1
       ;;
     --help|-h)
       print_help
@@ -91,32 +89,13 @@ cp "$SCRIPT_DIR/agents/"*.md "$TARGET_DIR/agents/"
 # Copy guidance
 cp "$SCRIPT_DIR/GEMINI.md" "$TARGET_DIR/"
 
-# Build and install MCP server
-if [ "$NO_MCP" -eq 0 ]; then
-  echo "Building MCP server..."
-
-  if ! command -v node &>/dev/null; then
-    echo "Warning: node not found. Skipping MCP build. Use --no-mcp to suppress this warning." >&2
-  elif ! command -v npm &>/dev/null; then
-    echo "Warning: npm not found. Skipping MCP build. Use --no-mcp to suppress this warning." >&2
-  else
-    MCP_SRC="$SCRIPT_DIR/mcp"
-    MCP_DEST="$TARGET_DIR/mcp"
-    mkdir -p "$MCP_DEST"
-
-    # Install dependencies and compile
-    (cd "$MCP_SRC" && npm ci --silent && npm run build --silent)
-
-    # Copy compiled output and runtime dependencies
-    cp -r "$MCP_SRC/dist" "$MCP_DEST/"
-    cp "$MCP_SRC/package.json" "$MCP_DEST/"
-    cp "$MCP_SRC/package-lock.json" "$MCP_DEST/"
-
-    # Install production dependencies in destination
-    (cd "$MCP_DEST" && npm ci --omit=dev --silent)
-
-    echo "MCP server installed to $MCP_DEST"
-  fi
+# The MCP server is the Ix CLI's own (`ix mcp --tools=all`, declared in
+# gemini-extension.json), so there is nothing to build. `--tools` arrived in
+# Ix 0.11.0; an older CLI rejects it and the server never starts.
+if ! command -v ix >/dev/null 2>&1; then
+  echo "Warning: ix not found on PATH. Install the Ix CLI (>= 0.11.0) for the MCP tools and hooks." >&2
+elif ! ix mcp --help 2>/dev/null | grep -q -- "--tools"; then
+  echo "Warning: this ix has no 'ix mcp --tools'. Run 'ix upgrade' (needs >= 0.11.0)." >&2
 fi
 
 echo ""

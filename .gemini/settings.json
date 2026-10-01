@@ -1,12 +1,9 @@
 {
   "mcpServers": {
     "ix-memory": {
-      "command": "node",
-      "args": ["dist/server.js"],
-      "cwd": "${workspacePath}/mcp",
-      "env": {
-        "IX_RUNTIME_URL": "http://localhost:8090"
-      }
+      "command": "ix",
+      "args": ["mcp", "--tools=all"],
+      "cwd": "${workspacePath}"
     }
   }
 }
