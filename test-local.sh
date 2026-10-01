@@ -13,7 +13,9 @@ echo "==> Running local MCP tests"
 (cd "$MCP_DIR" && npm test --silent)
 
 echo "==> Running hook unit tests"
-python3 "$SCRIPT_DIR/hooks/tests/test_pro_detection.py"
+# Discovery, so every hooks/tests/test_*.py runs (it used to name one file).
+# The tests put a strict fake `ix` first on PATH; none reaches a real backend.
+python3 -m unittest discover -s "$SCRIPT_DIR/hooks/tests" -p 'test_*.py'
 
 if command -v gemini >/dev/null 2>&1; then
   echo "==> Gemini CLI detected"
