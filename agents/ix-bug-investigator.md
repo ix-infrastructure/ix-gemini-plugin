@@ -76,10 +76,10 @@ Look for: missing null checks, wrong assumptions about input format, incorrect s
 
 Hard limit: 2 `ix read` calls. If the bug is still unclear, report the candidates and uncertainty.
 
-### Step 6 — Check for related issues (if ix pro available)
+### Step 6 — Check for related issues (Ix Pro only)
 
 ```bash
-ix bugs --status open --format llm
+ix bug list --format text
 ```
 
 Are there existing bug reports related to this component?
