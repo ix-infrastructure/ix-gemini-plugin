@@ -4,14 +4,28 @@
 """Smoke tests for Gemini hook scripts — verifiable without a live Gemini session."""
 from __future__ import annotations
 
+import atexit
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).parent.parent.resolve()
 PYTHON = sys.executable
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+
+import fake_ix  # noqa: E402
+
+# Every hook runs with the strict fake ix first on PATH and a private HOME and
+# state dir. Before this, these tests ran the hooks against whatever `ix` was
+# installed, so the write-command and session_end cases could start a real
+# `ix map` against the shared backend.
+_TMP = Path(tempfile.mkdtemp(prefix="ix-gemini-hook-tests-"))
+atexit.register(shutil.rmtree, _TMP, True)
+HOOK_ENV = fake_ix.isolated_env(_TMP)
 
 
 def _run_hook(script: str, stdin: str = "") -> subprocess.CompletedProcess[str]:
@@ -21,6 +35,7 @@ def _run_hook(script: str, stdin: str = "") -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         timeout=15,
+        env=HOOK_ENV,
     )
 
 
@@ -107,6 +122,32 @@ class WriteCommandDetectionTest(unittest.TestCase):
         assert _is_write_command("ls -la") is False
         assert _is_write_command("grep foo bar") is False
         assert _is_write_command("") is False
+
+    def test_fd_redirects_are_not_writes(self) -> None:
+        sys.path.insert(0, str(HOOKS_DIR))
+        from after_tool import _is_write_command  # type: ignore[import]
+
+        # Any `>` used to count, so every `2>/dev/null` started a map.
+        assert _is_write_command("ls src 2>/dev/null") is False
+        assert _is_write_command("npm test > /dev/null 2>&1") is False
+        assert _is_write_command("grep -r foo . 2>&1") is False
+        assert _is_write_command("cmd | tee /dev/stderr") is False
+        assert _is_write_command("sed -n 1,20p file.py") is False
+        assert _is_write_command("git status && git diff") is False
+
+    def test_in_place_and_compound_writes(self) -> None:
+        sys.path.insert(0, str(HOOKS_DIR))
+        from after_tool import _is_write_command  # type: ignore[import]
+
+        assert _is_write_command("sed -i 's/a/b/' file.py") is True
+        assert _is_write_command("sed -i.bak -e 's/a/b/' file.py") is True
+        assert _is_write_command("perl -pi -e 's/a/b/' file.py") is True
+        assert _is_write_command("make 2>&1 | tee build.log") is True
+        assert _is_write_command("cd src && rm old.py") is True
+        assert _is_write_command("cd src\nmv a.py b.py") is True
+        assert _is_write_command("echo x >| out.txt") is True
+        assert _is_write_command("git checkout -- file.py") is True
+        assert _is_write_command("sudo -u me cp a b") is True
 
 
 if __name__ == "__main__":

@@ -15,9 +15,23 @@ import time
 from pathlib import Path
 
 
-CACHE_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "ix-gemini-hooks"
-STATUS_CACHE_PATH = CACHE_DIR / "ix-status.json"
-BRIEFING_CACHE_PATH = CACHE_DIR / "ix-briefing.txt"
+def _state_dir() -> Path:
+    """Per-user state directory for hook caches and the map debounce.
+
+    It used to be ``$TMPDIR/ix-gemini-hooks``: one predictable directory shared
+    by every user on the machine and by every workspace, so a health answer or a
+    briefing stamp for one project was served to the next one opened within the
+    TTL. ``$XDG_STATE_HOME`` (default ``~/.local/state``) is per-user; anything
+    that is per-project data is additionally keyed by the workspace root.
+    """
+    xdg = os.environ.get("XDG_STATE_HOME", "")
+    base = Path(xdg) if xdg and os.path.isabs(xdg) else Path.home() / ".local" / "state"
+    return base / "ix-gemini-plugin"
+
+
+CACHE_DIR = _state_dir()
+# Whether @ix/pro is installed is a property of the user's ix install, not of a
+# project, so this one cache is per-user only.
 PRO_CACHE_PATH = CACHE_DIR / "ix-pro.json"
 ERROR_STORE = Path.home() / ".local" / "share" / "ix" / "plugin" / "errors"
 
@@ -27,6 +41,10 @@ HEALTH_TTL_SECONDS = 30
 # longer than the health check it used to borrow its TTL from.
 PRO_TTL_SECONDS = 3600
 BRIEFING_TTL_SECONDS = 600
+# At most one automatic map per workspace root per window. Ix itself holds a
+# per-workspace map lock, so this only stops a burst of edits from queueing a
+# burst of maps.
+MAP_DEBOUNCE_SECONDS = 300
 
 SHELL_OPERATORS = ("|", "&&", "||", ";", "$(", "`")
 SEARCH_COMMANDS = {"grep", "rg"}
@@ -84,7 +102,13 @@ def log(msg: str) -> None:
 
 def find_workspace_root(cwd: str | None) -> Path:
     start = Path(cwd or os.getcwd()).resolve()
+    home = Path.home().resolve()
     for candidate in (start, *start.parents):
+        # ~/.gemini/settings.json is Gemini's *user* settings file, present for
+        # every Gemini user, so it never marks a workspace. Without this check
+        # every project under $HOME that lacks its own .gemini/ resolved to $HOME.
+        if candidate == home:
+            continue
         if (candidate / ".gemini" / "settings.json").exists():
             return candidate
     for candidate in (start, *start.parents):
@@ -117,18 +141,41 @@ def ix_available() -> bool:
 
 # ── Caching ──────────────────────────────────────────────────────────────────
 
+def _ensure_private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
+def _root_key(root: str | Path | None) -> str:
+    """Stable per-workspace cache key: a hash of the canonical root path."""
+    canonical = str(Path(root or os.getcwd()).resolve())
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
 def _write_cache(path: Path, payload: dict) -> None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dir(path.parent)
     path.write_text(json.dumps(payload))
+
+
+def _status_cache_path(root: str | Path | None) -> Path:
+    return CACHE_DIR / "health" / f"{_root_key(root)}.json"
+
+
+def _briefing_cache_path(root: str | Path | None) -> Path:
+    return CACHE_DIR / "briefing" / f"{_root_key(root)}.txt"
 
 
 def ix_healthy(cwd: str | Path | None) -> bool:
     if not ix_available():
         return False
-    if STATUS_CACHE_PATH.exists():
+    cache_path = _status_cache_path(cwd)
+    if cache_path.exists():
         try:
-            cached = json.loads(STATUS_CACHE_PATH.read_text())
-        except json.JSONDecodeError:
+            cached = json.loads(cache_path.read_text())
+        except (OSError, json.JSONDecodeError):
             cached = None
         if isinstance(cached, dict):
             timestamp = float(cached.get("timestamp", 0))
@@ -137,7 +184,10 @@ def ix_healthy(cwd: str | Path | None) -> bool:
                 return ok
     result = run_command(["ix", "status"], cwd=cwd, timeout=8)
     ok = bool(result and result.returncode == 0)
-    _write_cache(STATUS_CACHE_PATH, {"timestamp": time.time(), "ok": ok})
+    try:
+        _write_cache(cache_path, {"timestamp": time.time(), "ok": ok})
+    except OSError:
+        pass
     return ok
 
 
@@ -157,7 +207,7 @@ def ix_pro_available(cwd: str | Path | None) -> bool:
     if PRO_CACHE_PATH.exists():
         try:
             cached = json.loads(PRO_CACHE_PATH.read_text())
-        except json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError):
             cached = None
         if isinstance(cached, dict):
             timestamp = float(cached.get("timestamp", 0))
@@ -192,19 +242,22 @@ def ix_pro_available(cwd: str | Path | None) -> bool:
     return ok
 
 
-def briefing_due(ttl_seconds: int = BRIEFING_TTL_SECONDS) -> bool:
-    if not BRIEFING_CACHE_PATH.exists():
-        return True
+def briefing_due(root: str | Path | None, ttl_seconds: int = BRIEFING_TTL_SECONDS) -> bool:
+    path = _briefing_cache_path(root)
     try:
-        last_sent = float(BRIEFING_CACHE_PATH.read_text().strip())
-    except ValueError:
+        last_sent = float(path.read_text().strip())
+    except (OSError, ValueError):
         return True
     return time.time() - last_sent >= ttl_seconds
 
 
-def mark_briefing_sent() -> None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    BRIEFING_CACHE_PATH.write_text(str(time.time()))
+def mark_briefing_sent(root: str | Path | None) -> None:
+    path = _briefing_cache_path(root)
+    try:
+        _ensure_private_dir(path.parent)
+        path.write_text(str(time.time()))
+    except OSError:
+        pass
 
 
 # ── JSON parsing ─────────────────────────────────────────────────────────────
@@ -544,7 +597,8 @@ def build_search_message(pattern: str, cwd: str | Path | None) -> str | None:
         ("text", ["ix", "text", pattern, "--limit", "15", "--format", "json"], 10),
     ]
     if looks_plain_pattern(pattern):
-        calls.append(("locate", ["ix", "locate", pattern, "--limit", "5", "--format", "json"], 10))
+        # `ix locate` has no --limit: it returns one resolved target (or candidates).
+        calls.append(("locate", ["ix", "locate", pattern, "--format", "json"], 10))
     results = run_parallel_json(calls, cwd)
 
     text_part = summarize_text_results(results.get("text"))
@@ -588,14 +642,114 @@ def build_read_message(file_path: str, cwd: str | Path | None) -> str | None:
     return " | ".join(pieces)
 
 
-def spawn_background_ix_map(cwd: str | Path | None) -> None:
+# ── Guarded automatic map ────────────────────────────────────────────────────
+
+def event_project_dir(event: dict) -> str | None:
+    """The user's project directory for this hook event.
+
+    Gemini sends it as ``cwd`` in the payload and as ``$GEMINI_PROJECT_DIR``.
+    Deliberately no ``os.getcwd()`` fallback: the hook process's own cwd is not
+    a statement about which project the user is in.
+    """
+    cwd = event.get("cwd")
+    if isinstance(cwd, str) and cwd.strip():
+        return cwd
+    env_dir = os.environ.get("GEMINI_PROJECT_DIR", "")
+    return env_dir or None
+
+
+def project_git_root(project_dir: str | Path | None) -> Path | None:
+    """`git rev-parse --show-toplevel` for the project, or None to skip mapping.
+
+    None when there is no project dir, it is not inside a git repository, or the
+    repository root is $HOME (a dotfiles repo would otherwise map the whole home
+    directory).
+    """
+    if not project_dir:
+        return None
+    result = run_command(
+        ["git", "-C", str(project_dir), "rev-parse", "--show-toplevel"], timeout=3
+    )
+    if not result or result.returncode != 0:
+        return None
+    top = result.stdout.strip()
+    if not top:
+        return None
+    root = Path(top).resolve()
+    if root == Path.home().resolve():
+        return None
+    return root
+
+
+def _map_stamp_path(root: Path) -> Path:
+    return CACHE_DIR / "map" / f"{_root_key(root)}.stamp"
+
+
+def _map_debounced(root: Path) -> bool:
     try:
-        subprocess.Popen(
-            ["ix", "map"],
-            cwd=str(cwd) if cwd else None,
+        window = float(os.environ.get("IX_MAP_DEBOUNCE_SECONDS", MAP_DEBOUNCE_SECONDS))
+    except ValueError:
+        window = MAP_DEBOUNCE_SECONDS
+    try:
+        last = _map_stamp_path(root).stat().st_mtime
+    except OSError:
+        return False
+    return time.time() - last < window
+
+
+def _mark_map_requested(root: Path) -> None:
+    path = _map_stamp_path(root)
+    _ensure_private_dir(path.parent)
+    path.write_text(str(time.time()))
+
+
+def workspace_mapped(root: Path) -> bool:
+    """True only when Ix reports this root's graph as complete.
+
+    Any failure, timeout or non-JSON answer reads as "not mapped": an automatic
+    map must never be the thing that creates a workspace.
+    """
+    payload = run_ix_json(
+        ["ix", "status", "--format", "json", "--root", str(root)], cwd=root, timeout=3
+    )
+    return isinstance(payload, dict) and payload.get("graphCompleted") is True
+
+
+def request_guarded_map(project_dir: str | Path | None) -> subprocess.Popen | None:
+    """Start a detached `ix map <root> --silent` if, and only if, it is safe.
+
+    Runs only when the project is a git repo whose root is not $HOME, the root
+    is already mapped, and no automatic map was requested for that root inside
+    the debounce window. The map itself is detached, so it never runs inside a
+    hook timeout. Returns the child (tests wait on it) or None when skipped.
+    """
+    if not ix_available():
+        return None
+    root = project_git_root(project_dir)
+    if root is None:
+        return None
+    if _map_debounced(root):
+        return None
+    if not workspace_mapped(root):
+        return None
+    try:
+        _mark_map_requested(root)
+    except OSError as exc:
+        log(f"[ix] map debounce stamp failed (non-fatal): {exc}")
+        return None
+    env = dict(os.environ)
+    # Ix skips an automatic map against a remote backend when this is set.
+    env["IX_AUTO_MAP"] = "1"
+    try:
+        return subprocess.Popen(
+            ["ix", "map", str(root), "--silent"],
+            cwd=str(root),
+            env=env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
     except Exception as exc:
-        log(f"[ix] spawn_background_ix_map failed (non-fatal): {exc}")
+        log(f"[ix] guarded ix map failed to start (non-fatal): {exc}")
+        return None
