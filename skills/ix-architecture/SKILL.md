@@ -7,17 +7,11 @@ description: Analyze system design — structure, coupling, code smells, and hig
 
 Answer: how healthy is this system's design, where are the weak boundaries, and what should be improved? Never reads source code.
 
-If the Ix runtime is unavailable, `ix_status` will report this; this skill cannot proceed without the graph.
+If Ix is unavailable (tool calls fail, or `ix_health()` reports the backend unreachable), this skill cannot proceed without the graph.
 
-## Preferred path — unified query
+## Preferred path — start
 
-For most cases:
-
-```
-ix_query({ mode: "architecture", targets: [$ARGUMENTS] })
-```
-
-Use the returned `preview_markdown` as the primary analysis. Supplement below for deeper investigation.
+There is no single-call architecture review; start at Phase 1 (`ix_subsystems()`, then `ix_smells()`).
 
 ## Phase 1 — Structure (always)
 

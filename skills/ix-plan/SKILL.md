@@ -7,17 +7,17 @@ description: Generate a risk-ordered implementation plan for a set of targets. A
 
 Answer: in what order should these changes be made, what will break, and what needs testing?
 
-If the Ix runtime is unavailable, `ix_status` will report this; fall back to manual assessment.
+If Ix is unavailable (tool calls fail, or `ix_health()` reports the backend unreachable), fall back to manual assessment.
 
-## Preferred path — unified query
+## Preferred path — one call
 
-For most cases:
+Call `ix_context` with the change description to find the code involved:
 
 ```
-ix_query({ mode: "plan", targets: [$ARGUMENTS] })
+ix_context({ issue: $ARGUMENTS })
 ```
 
-Use the returned `preview_markdown` as the primary plan. Supplement below for high-risk targets.
+Then run `ix_impact` on each resolved target (Phase 2) to order the plan by risk.
 
 ## Phase 1 — Scope (always)
 

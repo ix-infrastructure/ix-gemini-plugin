@@ -108,6 +108,8 @@ Updated `hooks/hooks.json` to use `"matcher": "run_shell_command"`.
 
 ## Bug 4 — MCP tools not connected (live validation, 2026-05-17)
 
+> Superseded: the bundled `mcp/` server described here was removed. The extension now launches the Ix CLI's own server, `ix mcp --tools=all`, with `cwd: ${workspacePath}`; nothing is built at install time.
+
 ### What was wrong
 
 `gemini-extension.json` had no `mcpServers` field. The Gemini CLI extension reference confirms that `mcpServers` **is** a valid field in `gemini-extension.json`. Without it, Gemini never starts the MCP server, so `ix_status`, `ix_query`, etc. are absent from Gemini's toolset.
@@ -214,7 +216,7 @@ Skills will be auto-discovered from `skills/<name>/SKILL.md` once converted. Hoo
 The following require a running Gemini CLI installation to verify:
 
 - [ ] `gemini extensions install .` succeeds and extension appears in `gemini extensions list`
-- [ ] MCP server starts automatically from `gemini-extension.json` — `ix_status`, `ix_query`, `ix_decide`, `ix_ingest` visible in Gemini's tool list
+- [ ] MCP server (`ix mcp --tools=all`, cwd `${workspacePath}`) starts automatically from `gemini-extension.json` — `ix_context`, `ix_search`, `ix_impact`, `ix_neighbors`, `ix_read` visible in Gemini's tool list, answering for the opened project
 - [ ] `SessionStart` hook fires and `additionalContext` is injected
 - [ ] `BeforeAgent` hook fires and briefing is injected (when Ix Pro available)
 - [ ] `BeforeTool` fires on `run_shell_command` grep/cat calls and injects `systemMessage`
@@ -222,4 +224,4 @@ The following require a running Gemini CLI installation to verify:
 - [ ] `SessionEnd` hook fires without error
 - [ ] Hook failure (missing `ix`) does not crash Gemini CLI — logs to stderr only
 - [ ] Skills appear in `/skills list`
-- [ ] `ix_ingest` MCP call succeeds after a file write
+- [ ] `ix_map()` MCP call succeeds after a file write

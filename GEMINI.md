@@ -20,65 +20,47 @@ This means Gemini is not a command wrapper. Gemini uses Ix as memory to reason, 
 
 ## MCP Tools (primary interface)
 
-The `ix-memory` MCP server exposes these tools. Always prefer MCP tools over shell commands — MCP tools call the runtime API directly, return structured evidence, and include `canonical_revision` so answers are reproducible.
+The `ix-memory` MCP server is the Ix CLI's own: the extension launches `ix mcp --tools=all` in the workspace directory (Ix CLI >= 0.11.0). Prefer these tools over shell `ix` commands — they return the same graph data without a process per call.
 
 | Tool | When to use |
 |---|---|
-| `ix_status` | Session start — check graph health before any work |
-| `ix_query` (mode: `understand`) | System map, data flows, coupling summary |
-| `ix_query` (mode: `investigate`) | Deep dive on a specific symbol or file |
-| `ix_query` (mode: `impact`) | Blast radius before editing |
-| `ix_query` (mode: `plan`) | Risk-ordered change sequencing |
-| `ix_query` (mode: `debug`) | Root-cause trace from symptom |
-| `ix_query` (mode: `architecture`) | Cohesion, coupling, smells, hotspots |
-| `ix_query` (mode: `docs`) | Generate or look up documentation |
-| `ix_query` (mode: `locate`) | Find files or symbols matching a query |
-| `ix_decide` | **Before writing or editing any file** — get allow/warn/block verdict |
-| `ix_ingest` | **After writing or editing any file** — keep graph current |
+| `ix_context({ target })` / `ix_context({ issue })` | First call on a task, issue, or unfamiliar symbol/file — ranked evidence and next calls |
+| `ix_subsystems()` / `ix_rank({ by, kind, top })` | System map, most central components |
+| `ix_overview({ target })` | One-call summary of a file, symbol or subsystem |
+| `ix_search({ term })` / `ix_locate({ symbol })` | Find a definition by (part of) its name |
+| `ix_explain({ symbol })` | Role and main users of a symbol |
+| `ix_neighbors({ symbol, relation })` | Callers, callees, imports, importers (`ix_callers`, `ix_callees`, `ix_imports`, `ix_imported_by` are the single-relation forms) |
+| `ix_trace({ symbol, to })` / `ix_depends({ symbol, depth })` | Call chains and dependent trees |
+| `ix_impact({ target })` | **Before editing** — blast radius and risk level |
+| `ix_read({ symbol })` | One symbol's source, without reading the whole file |
+| `ix_smells()` / `ix_inventory({ kind, path })` / `ix_stats()` | Architecture smells, entity listings, graph size |
+| `ix_health()` | Only when a result suggests the graph is missing or stale |
+| `ix_map()` | After edits, when later answers must see the change (slow; whole workspace) |
 
-### Pre-edit gate (required)
+With Ix Pro installed the server also offers `ix_briefing`, `ix_decisions` and `ix_decide` (records an architecture decision — it is not a pre-edit gate).
 
-Before writing to any file, call `ix_decide` with the file path and operation:
+### Before editing
 
-```
-ix_decide({ paths: ["src/foo.ts"], operation: "edit", context: "Adding retry logic" })
-```
+Call `ix_impact({ target: "<file or symbol>" })` on what you are about to change. If the risk is `high` or `critical`, tell the user what is at risk before proceeding.
 
-- `allow` → proceed normally
-- `warn` → proceed, but document your rationale
-- `block` → do not proceed without explicit user confirmation
+### After editing
 
-If the runtime is unavailable, `ix_decide` returns `allow` automatically (non-blocking).
-
-### Post-edit ingest (required)
-
-After writing to any file, call `ix_ingest` with all touched paths:
-
-```
-ix_ingest({ paths: ["src/foo.ts", "src/bar.ts"] })
-```
-
-At session end, call `ix_ingest({ paths: [], full_workspace: true })` for a complete graph refresh.
+The hooks refresh an already-mapped project in the background after file-modifying shell commands and at session end. When an answer later in this session depends on the edit, call `ix_map()` once (no arguments — `ix map` maps a directory, never a single file).
 
 ---
 
 ## Behavioral Rules
 
 ### Always
-- Call `ix_status` at session start to check graph readiness
-- Call `ix_decide` before any file write or edit
-- Call `ix_ingest` after any file write or edit
-- Use `ix_query` MCP tools before reading source code
+- Start with `ix_context` (or `ix_subsystems` for a whole-system question) before reading source code
+- Call `ix_impact` before a non-trivial edit
 - Stop early once you can answer the question
 - Label evidence and distinguish graph-backed facts from inferences
-- Check `canonical_revision` in tool responses — pin it when citing graph data
 
 ### Never
-- Skip `ix_decide` before file writes, even for small edits
-- Skip `ix_ingest` after file writes
 - Assume behavior without graph or code evidence
-- Output raw JSON — use `preview_markdown` from tool responses
-- Run `ix map` for exploration (use `ix_ingest` instead)
+- Output raw JSON — summarize tool results
+- Call `ix_map` for exploration — it re-ingests; read tools need no refresh
 
 ---
 
@@ -87,13 +69,12 @@ At session end, call `ix_ingest({ paths: [], full_workspace: true })` for a comp
 When answering a question about a codebase:
 
 ```text
-1. Orient       -> ix_query(mode: "understand") or ix_query(mode: "locate")
-2. Investigate  -> ix_query(mode: "investigate", targets: [symbol])
-3. Impact       -> ix_query(mode: "impact", targets: [file]) if edit is planned
-4. Decide       -> ix_decide(paths, operation) before any write
-5. Act          -> make the change
-6. Ingest       -> ix_ingest(paths) after the change
-7. Synthesize   -> answer citing canonical_revision from tool responses
+1. Orient       -> ix_context({ target }) or ix_subsystems()
+2. Investigate  -> ix_explain / ix_neighbors / ix_trace on the resolved symbol
+3. Impact       -> ix_impact({ target }) if an edit is planned
+4. Act          -> make the change
+5. Refresh      -> ix_map() only if later answers must see the change
+6. Synthesize   -> answer, labelling graph-backed facts
 ```
 
 Skip steps if earlier steps answer the question. Most read-only questions stop at step 2.
@@ -145,31 +126,17 @@ The Gemini CLI extension uses these hook events:
 - `SessionStart` injects Ix operating guidance
 - `BeforeAgent` injects the Ix Pro briefing once per 10 minutes
 - `BeforeTool` for `run_shell_command` front-runs `grep`/`rg` and read-style shell commands with Ix context
-- `AfterTool` for `run_shell_command` triggers `ix_ingest` after file-modifying commands
-- `SessionEnd` calls `ix_ingest({ paths: [], full_workspace: true })` for a complete graph refresh
+- `AfterTool` for `run_shell_command` requests a guarded background `ix map <git root> --silent` after file-modifying commands (only for an already-mapped repo, at most once per 5 minutes per repo)
+- `SessionEnd` requests the same guarded refresh
 
 ---
 
 ## Repo Structure
 
 ```text
-gemini-extension.json            - extension manifest
-mcp/
-  server.ts                      - MCP server entry point (stdio transport)
-  lib/
-    config.ts                    - runtime URL, surface ID, timeouts
-    errors.ts                    - IxError class, error log
-    parser.ts                    - ToolResult types (canonical_revision, preview_markdown)
-    runtime-client.ts            - HTTP client for Ix Core Runtime API
-  shared/
-    secrets.ts                   - secret redaction
-  tools/
-    ix_query.ts                  - unified query (9 modes)
-    ix_decide.ts                 - pre-edit policy gate
-    ix_ingest.ts                 - post-edit graph ingest
-    ix_status.ts                 - health and graph readiness check
+gemini-extension.json            - extension manifest; MCP server = `ix mcp --tools=all`
 .gemini/
-  settings.json                  - mcpServers config (example / project override)
+  settings.json                  - same MCP server, for developing in this repo
 hooks/
   common.py                      - shared helpers
   session_start.py               - startup guidance

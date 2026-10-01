@@ -7,17 +7,17 @@ description: Change risk analysis — blast radius, affected systems, and what t
 
 Answer: what breaks if this changes, and is it safe to proceed? Stop as early as the risk level allows.
 
-If the Ix runtime is unavailable, `ix_status` will report this; estimate impact from available context.
+If Ix is unavailable (tool calls fail, or `ix_health()` reports the backend unreachable), estimate impact from available context.
 
-## Preferred path — unified query
+## Preferred path — one call
 
-For most cases:
+`ix_impact` returns the risk level, dependents grouped by subsystem, and the most affected members in one call:
 
 ```
-ix_query({ mode: "impact", targets: [$ARGUMENTS] })
+ix_impact({ target: $ARGUMENTS })
 ```
 
-Use the returned `preview_markdown` as the primary answer. Supplement below if risk classification needs detail.
+Supplement below if the risk classification needs detail.
 
 ## Phase 1 — Risk score (always)
 

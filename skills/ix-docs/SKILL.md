@@ -7,7 +7,7 @@ description: Generate narrative-first, importance-weighted documentation for a r
 
 Produce documentation that helps a new engineer understand the system quickly.
 
-If the Ix runtime is unavailable, `ix_status` will report this; this skill cannot proceed without the graph.
+If Ix is unavailable (tool calls fail, or `ix_health()` reports the backend unreachable), this skill cannot proceed without the graph.
 
 ## Core model
 
@@ -23,19 +23,19 @@ Style: `--style narrative` (default) / `--style reference` / `--style hybrid`.
 1. Graph first — start with `ix_subsystems`, `ix_overview`, `ix_rank`, `ix_explain`
 2. Importance-weighted — expand detail by centrality, risk, coupling
 3. Selective low-level detail — never exhaustive
-4. No raw dumps — use `preview_markdown` from tool responses
+4. No raw dumps — summarize tool results
 5. No redundancy — group repeated patterns
 6. Code reads are rare — default: max 2; full: max 5
 
-## Preferred path — unified query
+## Preferred path — one call
 
-For most cases:
+For a named target, call `ix_context` first and use its evidence as the skeleton of the narrative layer:
 
 ```
-ix_query({ mode: "docs", targets: [$ARGUMENTS], depth: "medium" })
+ix_context({ target: $ARGUMENTS })
 ```
 
-Use the returned `preview_markdown` as the base documentation. Supplement with phases below for `--full` coverage.
+Supplement with the phases below for `--full` coverage.
 
 ## Phases
 

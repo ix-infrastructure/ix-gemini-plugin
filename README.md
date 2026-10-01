@@ -8,7 +8,7 @@ Gemini + Ix = reasoning engine + persistent code knowledge graph. Skills are cog
 
 ## Requirements
 
-- [Ix Memory](https://github.com/ix-infrastructure/Ix) installed and running (`ix status` returns ok)
+- [Ix Memory](https://github.com/ix-infrastructure/Ix) CLI >= 0.11.0 installed and running (`ix status` returns ok)
 - `python3` in PATH for hook scripts
 - `ripgrep` (`rg`) is recommended
 
@@ -28,6 +28,12 @@ High-level cognitive skills:
 | `ix-debug <symptom>` | Root cause analysis from symptom to candidates | Minimal source reads at suspects only |
 | `ix-architecture [scope]` | Design health: coupling, smells, hotspots | Graph only; never reads source |
 | `ix-docs <target> [--full]` | Generate narrative-first documentation with selective reference | Default is onboarding-focused |
+
+## MCP Server
+
+The extension registers one MCP server, `ix-memory`, which is the Ix CLI's own: `ix mcp --tools=all`, started in the workspace directory (`cwd: ${workspacePath}`) so it answers for the project you opened Gemini in. Nothing is built or bundled; tool names are the CLI's (`ix_context`, `ix_search`, `ix_impact`, `ix_neighbors`, `ix_read`, ...). `--tools` needs Ix >= 0.11.0.
+
+`ix mcp install --host gemini` registers a server with the same name, `ix-memory`, in `~/.gemini/settings.json`. You do not need it with this extension. If both exist, Gemini merges them into one server and the settings entry's `command`/`args` win, so remove it (`gemini mcp remove --scope user ix-memory`) or keep its args at `mcp --tools=all`.
 
 ## Agent Playbooks
 
@@ -97,13 +103,13 @@ PowerShell equivalent:
 
 ## Local Validation
 
-Run the local MCP build and test path with:
+Run the hook and manifest tests with:
 
 ```bash
 ./test-local.sh
 ```
 
-This covers the local MCP server surface and skips live Gemini CLI validation when `gemini` is not installed.
+The tests run every hook against a strict fake `ix`, never a real backend, and skip live Gemini CLI validation when `gemini` is not installed.
 
 ## Repo Guidance
 

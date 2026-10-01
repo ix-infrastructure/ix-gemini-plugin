@@ -65,7 +65,7 @@ From the impact + callers data, identify:
 
 ### Step 6 — Code read (only if a target's role is unclear after graph analysis)
 
-Use a targeted `ix_query` or shell `ix read` fallback only if a target's role is still unclear.
+Use `ix_explain({ symbol })` or `ix_read({ symbol })` only if a target's role is still unclear.
 
 Use only to understand what a target does if ix explain was insufficient.
 
