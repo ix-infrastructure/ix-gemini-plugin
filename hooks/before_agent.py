@@ -21,7 +21,7 @@ def main() -> None:
     workspace_root = find_workspace_root(event.get("cwd"))
     if not ix_healthy(workspace_root) or not ix_pro_available(workspace_root):
         return
-    if not briefing_due():
+    if not briefing_due(workspace_root):
         return
 
     briefing = run_ix_text(
@@ -30,7 +30,7 @@ def main() -> None:
     if not briefing:
         return
 
-    mark_briefing_sent()
+    mark_briefing_sent(workspace_root)
     emit_json({"additionalContext": f"[ix] Session briefing:\n{briefing}"})
 
 

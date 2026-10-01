@@ -48,8 +48,8 @@ Reusable playbook docs in [`agents/`](./agents):
 | Session starts | `SessionStart` | Injects Ix operating guidance and graph-first rules |
 | Before agent plans | `BeforeAgent` | Injects `ix briefing` once per 10 min if Ix Pro is available |
 | Before shell tool | `BeforeTool` | Front-runs `grep`/`rg`/`cat`/`head` with `ix text` + `ix locate` context |
-| After shell tool | `AfterTool` | Triggers background `ix map` after file-modifying shell commands |
-| Session ends | `SessionEnd` | Runs `ix map` asynchronously to refresh the graph |
+| After shell tool | `AfterTool` | After a file-modifying shell command, refreshes an already-mapped git repo in the background (`ix map <root> --silent`, at most once per 5 min per repo) |
+| Session ends | `SessionEnd` | Same guarded background refresh of the project's git root |
 
 ## Install
 
