@@ -1,13 +1,46 @@
 #!/usr/bin/env python3
 # Copyright 2026 Ix Infrastructure Inc.
 
-"""AfterTool hook — request a guarded graph refresh after file-modifying shell commands."""
+"""AfterTool hook — Ix context for shell searches and reads, graph refresh after edits.
+
+Matched in hooks.json to `run_shell_command`, `write_file` and `replace` (the
+tool names in gemini-cli's packages/core/src/tools/definitions/
+base-declarations.ts).
+
+- A shell `grep`/`rg`/`cat`/... gets Ix context appended to its result through
+  `hookSpecificOutput.additionalContext`, which Gemini adds to the tool result
+  the model reads (core/coreToolHookTriggers.ts). This used to be a BeforeTool
+  hook printing `systemMessage`, which Gemini shows the user and never the
+  model; a BeforeTool hook has no channel to the model short of blocking the
+  tool (scheduler/hook-utils.ts).
+- A file-modifying shell command, or a successful `write_file`/`replace`,
+  requests the guarded background `ix map`.
+"""
 from __future__ import annotations
 
 import re
 import shlex
+from pathlib import Path
 
-from common import event_project_dir, log, read_event, request_guarded_map
+from common import (
+    HOOK_BUDGET_SECONDS,
+    Deadline,
+    build_read_message,
+    build_search_message,
+    emit_model_context,
+    event_project_dir,
+    extract_read_path,
+    extract_search_pattern,
+    find_workspace_root,
+    ix_healthy,
+    log,
+    read_event,
+    request_guarded_map,
+)
+
+SHELL_TOOL = "run_shell_command"
+# Gemini's native file-editing tools; both take `file_path`.
+EDIT_TOOLS = {"write_file", "replace"}
 
 
 # Commands whose plain invocation modifies files.
@@ -128,15 +161,63 @@ def _is_write_command(command: str) -> bool:
     return any(_segment_writes(seg) for seg in _segments(tokens))
 
 
+def _edited_file_dir(event: dict, tool_input: dict) -> str | None:
+    """Directory of the file a native edit tool wrote, for the guarded map."""
+    file_path = tool_input.get("file_path")
+    if not isinstance(file_path, str) or not file_path.strip():
+        return None
+    path = Path(file_path)
+    if not path.is_absolute():
+        base = event_project_dir(event)
+        if not base:
+            return None
+        path = Path(base) / path
+    return str(path.parent)
+
+
+def _tool_failed(event: dict) -> bool:
+    response = event.get("tool_response")
+    return isinstance(response, dict) and bool(response.get("error"))
+
+
+def _shell_context(event: dict, command: str, deadline: Deadline) -> str | None:
+    pattern = extract_search_pattern(command)
+    file_path = None if pattern else extract_read_path(command)
+    if not pattern and not file_path:
+        return None
+    workspace_root = find_workspace_root(event.get("cwd"))
+    if not ix_healthy(workspace_root, deadline):
+        return None
+    if pattern:
+        return build_search_message(pattern, workspace_root, deadline)
+    return build_read_message(file_path, workspace_root, deadline)
+
+
 def main() -> None:
     try:
+        deadline = Deadline(HOOK_BUDGET_SECONDS["AfterTool"])
         event = read_event()
         tool_input = event.get("tool_input", {})
         if not isinstance(tool_input, dict):
             return
-        command = str(tool_input.get("command") or tool_input.get("cmd") or "")
-        if command and _is_write_command(command):
-            request_guarded_map(event_project_dir(event))
+        tool_name = event.get("tool_name")
+
+        if tool_name in EDIT_TOOLS:
+            if not _tool_failed(event):
+                request_guarded_map(_edited_file_dir(event, tool_input), deadline)
+            return
+        if tool_name not in (None, SHELL_TOOL):
+            return
+
+        command = str(tool_input.get("command") or "")
+        if not command:
+            return
+        if _is_write_command(command):
+            request_guarded_map(event_project_dir(event), deadline)
+            return
+        context = _shell_context(event, command, deadline)
+        if context:
+            emit_model_context("AfterTool", context)
     except Exception as exc:
         log(f"[ix] after_tool hook error (non-fatal): {exc}")
 
