@@ -1,5 +1,7 @@
 # ix-gemini-plugin Roadmap
 
+> **Superseded MCP design.** The `mcp/` server and its `/v2/*` runtime client described below were removed: no Ix release serves those routes. The extension now launches the Ix CLI's own MCP server, `ix mcp --tools=all`, and the tool names are the CLI's (`ix_context`, `ix_search`, `ix_impact`, `ix_neighbors`, `ix_read`, ...). `ix_query`, `ix_status` and the pre-edit `ix_decide` gate no longer exist.
+
 ## Task Tracking Rule
 
 Any AI agent or human working on this roadmap must update task fields directly inside this file.

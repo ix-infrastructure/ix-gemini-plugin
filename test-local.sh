@@ -4,13 +4,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MCP_DIR="$SCRIPT_DIR/mcp"
 
-echo "==> Building MCP server"
-(cd "$MCP_DIR" && npm run build --silent)
-
-echo "==> Running local MCP tests"
-(cd "$MCP_DIR" && npm test --silent)
+# No MCP build or tests here: the extension's MCP server is the Ix CLI's own
+# `ix mcp --tools=all` (gemini-extension.json), tested in the Ix repo.
 
 echo "==> Running hook unit tests"
 # Discovery, so every hooks/tests/test_*.py runs (it used to name one file).

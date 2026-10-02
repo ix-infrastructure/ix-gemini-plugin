@@ -7,17 +7,17 @@ description: Deep dive into a symbol, feature, or bug. Graph-first, minimal code
 
 Answer: what is this, how does it connect, and what's the execution path? Stop as soon as those three questions can be answered accurately.
 
-If the Ix runtime is unavailable, `ix_status` will report this; fall back to file reads as needed.
+If Ix is unavailable (tool calls fail, or `ix_health()` reports the backend unreachable), fall back to file reads as needed.
 
-## Preferred path — unified query
+## Preferred path — one call
 
-For most cases, call `ix_query` once:
+Call `ix_context` first; it returns ranked evidence and suggests the next calls:
 
 ```
-ix_query({ mode: "investigate", targets: [$ARGUMENTS] })
+ix_context({ target: $ARGUMENTS })
 ```
 
-Use the returned `preview_markdown` as the primary answer. Supplement with specific tools below if needed.
+Supplement with the specific tools below if needed.
 
 ## Phase 1 — Locate (always)
 

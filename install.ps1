@@ -76,34 +76,14 @@ Copy-Item (Join-Path $scriptDir "agents\*.md") $agentsTarget
 
 Copy-Item (Join-Path $scriptDir "GEMINI.md") $targetDir
 
-# Build and install MCP server
-$nodePath = Get-Command "node" -ErrorAction SilentlyContinue
-$npmPath = Get-Command "npm" -ErrorAction SilentlyContinue
-
-if (-not $nodePath) {
-    Write-Warning "node not found — skipping MCP server build. Install Node.js >= 18 and re-run."
-} elseif (-not $npmPath) {
-    Write-Warning "npm not found — skipping MCP server build."
-} else {
-    Write-Host "Building MCP server..."
-    $mcpSrc = Join-Path $scriptDir "mcp"
-    $mcpDest = Join-Path $targetDir "mcp"
-    New-Item -ItemType Directory -Path $mcpDest -Force | Out-Null
-
-    Push-Location $mcpSrc
-    npm ci --silent
-    npm run build --silent
-    Pop-Location
-
-    Copy-Item -Recurse (Join-Path $mcpSrc "dist") $mcpDest -Force
-    Copy-Item (Join-Path $mcpSrc "package.json") $mcpDest
-    Copy-Item (Join-Path $mcpSrc "package-lock.json") $mcpDest
-
-    Push-Location $mcpDest
-    npm ci --omit=dev --silent
-    Pop-Location
-
-    Write-Host "MCP server installed to $mcpDest"
+# The MCP server is the Ix CLI's own (`ix mcp --tools=all`, declared in
+# gemini-extension.json), so there is nothing to build. `--tools` arrived in
+# Ix 0.11.0; an older CLI rejects it and the server never starts.
+$ixPath = Get-Command "ix" -ErrorAction SilentlyContinue
+if (-not $ixPath) {
+    Write-Warning "ix not found on PATH. Install the Ix CLI (>= 0.11.0) for the MCP tools and hooks."
+} elseif (-not ((& ix mcp --help 2>$null) -match "--tools")) {
+    Write-Warning "This ix has no 'ix mcp --tools'. Run 'ix upgrade' (needs >= 0.11.0)."
 }
 
 Write-Host "Done. Restart Gemini CLI to activate the extension."

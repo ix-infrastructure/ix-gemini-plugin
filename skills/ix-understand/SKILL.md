@@ -7,17 +7,17 @@ description: Build a mental model of a system, subsystem, or the whole repo. Gra
 
 Build an accurate mental model of the target's structure, purpose, and key components. Stop as soon as you can answer: what does this do, what are its key parts, and where should someone explore next?
 
-If the Ix runtime is unavailable, `ix_status` will report this; proceed with best-effort analysis.
+If Ix is unavailable (tool calls fail, or `ix_health()` reports the backend unreachable), proceed with best-effort analysis.
 
-## Preferred path — unified query
+## Preferred path — one call
 
-For most cases, call `ix_query` once and use the `preview_markdown` result as the primary answer:
+If `$ARGUMENTS` names a target, call `ix_context` first and use its ranked evidence (definition, members, callers, importers, related files) as the backbone of the answer:
 
 ```
-ix_query({ mode: "understand", targets: [$ARGUMENTS], depth: "medium" })
+ix_context({ target: $ARGUMENTS })
 ```
 
-Supplement with specific tools below if the response needs more detail.
+For a whole-repo question (no target), start at Phase 1. Supplement with the phases below if the evidence needs more detail.
 
 ## Phase 1 — Orient (always run)
 

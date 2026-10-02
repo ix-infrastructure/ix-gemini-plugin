@@ -1,15 +1,12 @@
 {
   "name": "ix-memory",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Ix Memory integration — transforms Gemini CLI into a graph-reasoning agent with cognitive skills for understanding, investigation, impact analysis, planning, debugging, architecture auditing, and deep documentation synthesis.",
   "mcpServers": {
     "ix-memory": {
-      "command": "node",
-      "args": ["dist/server.js"],
-      "cwd": "${extensionPath}/mcp",
-      "env": {
-        "IX_RUNTIME_URL": "http://localhost:8090"
-      }
+      "command": "ix",
+      "args": ["mcp", "--tools=all"],
+      "cwd": "${workspacePath}"
     }
   }
 }

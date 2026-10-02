@@ -7,17 +7,17 @@ description: Root cause analysis — trace execution path to a failure, narrow c
 
 Answer: where in the execution path is this likely failing, and why? Stop once you have 1-3 root cause candidates with supporting evidence.
 
-If the Ix runtime is unavailable, `ix_status` will report this; fall back to grep + file reads.
+If Ix is unavailable (tool calls fail, or `ix_health()` reports the backend unreachable), fall back to grep + file reads.
 
-## Preferred path — unified query
+## Preferred path — one call
 
-For most cases:
+Call `ix_context` with the symptom; it ranks the code most related to it:
 
 ```
-ix_query({ mode: "debug", targets: [$ARGUMENTS], query: $ARGUMENTS })
+ix_context({ issue: $ARGUMENTS })
 ```
 
-Use the returned `preview_markdown` as the primary analysis. Supplement below if candidates need confirmation.
+Confirm the candidates with the phases below.
 
 ## Phase 1 — Locate the entry point (always)
 
