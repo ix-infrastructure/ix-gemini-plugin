@@ -125,8 +125,10 @@ The `agents/` directory carries reusable playbook docs:
 The Gemini CLI extension uses these hook events:
 - `SessionStart` injects Ix operating guidance
 - `BeforeAgent` injects the Ix Pro briefing once per 10 minutes
-- `BeforeTool` for `run_shell_command` front-runs `grep`/`rg` and read-style shell commands with Ix context
-- `AfterTool` for `run_shell_command` requests a guarded background `ix map <git root> --silent` after file-modifying commands (only for an already-mapped repo, at most once per 5 minutes per repo)
+- `AfterTool` for `run_shell_command` appends Ix context to the result of `grep`/`rg` and read-style shell commands
+- `AfterTool` for `run_shell_command`, `write_file` and `replace` requests a guarded background `ix map <git root> --silent` after a file edit (only for an already-mapped repo, at most once per 5 minutes per repo)
+
+Context reaches the model only as `hookSpecificOutput.additionalContext` (SessionStart, BeforeAgent, AfterTool). `systemMessage` is shown to the user only, and a BeforeTool hook has no channel to the model short of blocking the tool, so there is no BeforeTool hook.
 - `SessionEnd` requests the same guarded refresh
 
 ---
@@ -141,8 +143,7 @@ hooks/
   common.py                      - shared helpers
   session_start.py               - startup guidance
   before_agent.py                - Ix Pro briefing injection
-  before_tool.py                 - shell search/read interception
-  after_tool.py                  - background graph refresh on writes
+  after_tool.py                  - Ix context for shell search/read; graph refresh on edits
   session_end.py                 - session end graph refresh
 skills/
   ix-help/SKILL.md

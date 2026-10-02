@@ -46,6 +46,20 @@ BRIEFING_TTL_SECONDS = 600
 # burst of maps.
 MAP_DEBOUNCE_SECONDS = 300
 
+# Wall-clock budget for all the ix calls one run of each hook makes. Each sits
+# under that hook's `timeout` in hooks.json (milliseconds), leaving room for
+# Python start-up. Gemini kills a hook that outlives its timeout and drops its
+# output (hookRunner.ts), so an unbounded hook loses its context entirely and
+# holds up the turn or tool result for the full timeout before it does.
+HOOK_BUDGET_SECONDS = {
+    "SessionStart": 10,
+    "BeforeAgent": 12,
+    "AfterTool": 8,
+    "SessionEnd": 3,
+}
+# Not worth starting an ix call with less than this left.
+MIN_CALL_SECONDS = 0.5
+
 SHELL_OPERATORS = ("|", "&&", "||", ";", "$(", "`")
 SEARCH_COMMANDS = {"grep", "rg"}
 READ_COMMANDS = {"cat", "head", "tail", "sed", "awk"}
@@ -93,6 +107,44 @@ def emit_json(payload: dict) -> None:
     sys.stdout.write("\n")
 
 
+def emit_model_context(event_name: str, context: str) -> None:
+    """Print `context` on the channel Gemini hands to the model.
+
+    Gemini reads only ``hookSpecificOutput.additionalContext``
+    (DefaultHookOutput.getAdditionalContext in packages/core/src/hooks/types.ts):
+    SessionStart adds it to history, BeforeAgent to the prompt, AfterTool to
+    the tool result. A top-level ``additionalContext`` is ignored, and
+    ``systemMessage`` is shown to the user only.
+    """
+    emit_json({
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "additionalContext": context,
+        }
+    })
+
+
+class Deadline:
+    """The wall-clock budget one hook run shares across its ix calls."""
+
+    def __init__(self, seconds: float) -> None:
+        self._end = time.monotonic() + seconds
+
+    def remaining(self) -> float:
+        return max(0.0, self._end - time.monotonic())
+
+    def timeout(self, cap: float) -> float | None:
+        """``min(cap, remaining)``, or None when too little is left to start a call."""
+        left = self.remaining()
+        if left < MIN_CALL_SECONDS:
+            return None
+        return min(cap, left)
+
+
+def _call_timeout(cap: float, deadline: Deadline | None) -> float | None:
+    return cap if deadline is None else deadline.timeout(cap)
+
+
 def log(msg: str) -> None:
     """Debug logging — always to stderr so it never corrupts JSON stdout."""
     print(msg, file=sys.stderr)
@@ -120,7 +172,7 @@ def find_workspace_root(cwd: str | None) -> Path:
 # ── Command execution ────────────────────────────────────────────────────────
 
 def run_command(
-    argv: list[str], cwd: str | Path | None = None, timeout: int = 10
+    argv: list[str], cwd: str | Path | None = None, timeout: float = 10
 ) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(
@@ -168,7 +220,7 @@ def _briefing_cache_path(root: str | Path | None) -> Path:
     return CACHE_DIR / "briefing" / f"{_root_key(root)}.txt"
 
 
-def ix_healthy(cwd: str | Path | None) -> bool:
+def ix_healthy(cwd: str | Path | None, deadline: Deadline | None = None) -> bool:
     if not ix_available():
         return False
     cache_path = _status_cache_path(cwd)
@@ -182,7 +234,10 @@ def ix_healthy(cwd: str | Path | None) -> bool:
             ok = bool(cached.get("ok", False))
             if time.time() - timestamp < HEALTH_TTL_SECONDS:
                 return ok
-    result = run_command(["ix", "status"], cwd=cwd, timeout=8)
+    timeout = _call_timeout(8, deadline)
+    if timeout is None:
+        return False
+    result = run_command(["ix", "status"], cwd=cwd, timeout=timeout)
     ok = bool(result and result.returncode == 0)
     try:
         _write_cache(cache_path, {"timestamp": time.time(), "ok": ok})
@@ -203,7 +258,7 @@ def _is_pro_stub_response(result: subprocess.CompletedProcess[str]) -> bool:
     return "requires Ix Pro" in blob
 
 
-def ix_pro_available(cwd: str | Path | None) -> bool:
+def ix_pro_available(cwd: str | Path | None, deadline: Deadline | None = None) -> bool:
     if PRO_CACHE_PATH.exists():
         try:
             cached = json.loads(PRO_CACHE_PATH.read_text())
@@ -226,7 +281,10 @@ def ix_pro_available(cwd: str | Path | None) -> bool:
     # Running the command itself is the discriminator: the stub exits 1, the real
     # command exits 0. ix_healthy() is checked before this (before_agent.py), so
     # the backend is already known reachable.
-    result = run_command(["ix", "briefing", "--format", "json"], cwd=cwd, timeout=8)
+    timeout = _call_timeout(8, deadline)
+    if timeout is None:
+        return False
+    result = run_command(["ix", "briefing", "--format", "json"], cwd=cwd, timeout=timeout)
     if result is None:
         # Could not run ix at all (timeout, OSError). Says nothing about Pro.
         return False
@@ -299,7 +357,7 @@ def parse_json_output(text: str) -> dict | list | None:
 
 
 def run_ix_json(
-    argv: list[str], cwd: str | Path | None = None, timeout: int = 10
+    argv: list[str], cwd: str | Path | None = None, timeout: float = 10
 ) -> dict | list | None:
     result = run_command(argv, cwd=cwd, timeout=timeout)
     if not result or result.returncode != 0:
@@ -308,7 +366,7 @@ def run_ix_json(
 
 
 def run_ix_text(
-    argv: list[str], cwd: str | Path | None = None, timeout: int = 10
+    argv: list[str], cwd: str | Path | None = None, timeout: float = 10
 ) -> str | None:
     result = run_command(argv, cwd=cwd, timeout=timeout)
     if not result or result.returncode != 0:
@@ -575,13 +633,25 @@ def summarize_inventory(payload: dict | list | None) -> str:
 # ── Parallel execution ───────────────────────────────────────────────────────
 
 def run_parallel_json(
-    calls: list[tuple[str, list[str], int]], cwd: str | Path | None
+    calls: list[tuple[str, list[str], int]],
+    cwd: str | Path | None,
+    deadline: Deadline | None = None,
 ) -> dict[str, dict | list | None]:
+    """Run the calls at once; each is cut off at its own cap or the deadline."""
     results: dict[str, dict | list | None] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(calls) or 1) as executor:
+    runnable: list[tuple[str, list[str], float]] = []
+    for name, argv, cap in calls:
+        timeout = _call_timeout(cap, deadline)
+        if timeout is None:
+            results[name] = None
+        else:
+            runnable.append((name, argv, timeout))
+    if not runnable:
+        return results
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(runnable)) as executor:
         future_map = {
             executor.submit(run_ix_json, argv, cwd=cwd, timeout=timeout): name
-            for name, argv, timeout in calls
+            for name, argv, timeout in runnable
         }
         for future in concurrent.futures.as_completed(future_map):
             results[future_map[future]] = future.result()
@@ -590,7 +660,9 @@ def run_parallel_json(
 
 # ── Message builders ─────────────────────────────────────────────────────────
 
-def build_search_message(pattern: str, cwd: str | Path | None) -> str | None:
+def build_search_message(
+    pattern: str, cwd: str | Path | None, deadline: Deadline | None = None
+) -> str | None:
     if len(pattern) < 3:
         return None
     calls: list[tuple[str, list[str], int]] = [
@@ -599,7 +671,7 @@ def build_search_message(pattern: str, cwd: str | Path | None) -> str | None:
     if looks_plain_pattern(pattern):
         # `ix locate` has no --limit: it returns one resolved target (or candidates).
         calls.append(("locate", ["ix", "locate", pattern, "--format", "json"], 10))
-    results = run_parallel_json(calls, cwd)
+    results = run_parallel_json(calls, cwd, deadline)
 
     text_part = summarize_text_results(results.get("text"))
     locate_part = summarize_locate_results(results.get("locate"))
@@ -615,7 +687,9 @@ def build_search_message(pattern: str, cwd: str | Path | None) -> str | None:
     return " | ".join(pieces)
 
 
-def build_read_message(file_path: str, cwd: str | Path | None) -> str | None:
+def build_read_message(
+    file_path: str, cwd: str | Path | None, deadline: Deadline | None = None
+) -> str | None:
     if not file_path or skip_read_path(file_path):
         return None
     filename = Path(file_path).name
@@ -628,6 +702,7 @@ def build_read_message(file_path: str, cwd: str | Path | None) -> str | None:
             ("impact", ["ix", "impact", filename, "--format", "json"], 10),
         ],
         cwd,
+        deadline,
     )
     entity_part = summarize_overview(results.get("overview")) or summarize_inventory(results.get("inventory"))
     risk_part = summarize_impact(results.get("impact"))
@@ -658,7 +733,9 @@ def event_project_dir(event: dict) -> str | None:
     return env_dir or None
 
 
-def project_git_root(project_dir: str | Path | None) -> Path | None:
+def project_git_root(
+    project_dir: str | Path | None, deadline: Deadline | None = None
+) -> Path | None:
     """`git rev-parse --show-toplevel` for the project, or None to skip mapping.
 
     None when there is no project dir, it is not inside a git repository, or the
@@ -667,8 +744,11 @@ def project_git_root(project_dir: str | Path | None) -> Path | None:
     """
     if not project_dir:
         return None
+    timeout = _call_timeout(3, deadline)
+    if timeout is None:
+        return None
     result = run_command(
-        ["git", "-C", str(project_dir), "rev-parse", "--show-toplevel"], timeout=3
+        ["git", "-C", str(project_dir), "rev-parse", "--show-toplevel"], timeout=timeout
     )
     if not result or result.returncode != 0:
         return None
@@ -703,19 +783,24 @@ def _mark_map_requested(root: Path) -> None:
     path.write_text(str(time.time()))
 
 
-def workspace_mapped(root: Path) -> bool:
+def workspace_mapped(root: Path, deadline: Deadline | None = None) -> bool:
     """True only when Ix reports this root's graph as complete.
 
     Any failure, timeout or non-JSON answer reads as "not mapped": an automatic
     map must never be the thing that creates a workspace.
     """
+    timeout = _call_timeout(3, deadline)
+    if timeout is None:
+        return False
     payload = run_ix_json(
-        ["ix", "status", "--format", "json", "--root", str(root)], cwd=root, timeout=3
+        ["ix", "status", "--format", "json", "--root", str(root)], cwd=root, timeout=timeout
     )
     return isinstance(payload, dict) and payload.get("graphCompleted") is True
 
 
-def request_guarded_map(project_dir: str | Path | None) -> subprocess.Popen | None:
+def request_guarded_map(
+    project_dir: str | Path | None, deadline: Deadline | None = None
+) -> subprocess.Popen | None:
     """Start a detached `ix map <root> --silent` if, and only if, it is safe.
 
     Runs only when the project is a git repo whose root is not $HOME, the root
@@ -725,12 +810,12 @@ def request_guarded_map(project_dir: str | Path | None) -> subprocess.Popen | No
     """
     if not ix_available():
         return None
-    root = project_git_root(project_dir)
+    root = project_git_root(project_dir, deadline)
     if root is None:
         return None
     if _map_debounced(root):
         return None
-    if not workspace_mapped(root):
+    if not workspace_mapped(root, deadline):
         return None
     try:
         _mark_map_requested(root)

@@ -14,7 +14,8 @@ hook that builds an argv the real CLI rejects fails here too:
 Every call is appended as one JSON line ({argv, cwd, IX_AUTO_MAP}) to
 $FAKE_IX_LOG. `ix status --format json` reports graphCompleted from
 $FAKE_IX_GRAPH_COMPLETED ("1" = true); $FAKE_IX_STATUS=fail|garbage makes it
-exit 1 or print non-JSON.
+exit 1 or print non-JSON. $FAKE_IX_SLEEP=<seconds> makes every call (after it
+is logged) sleep first, to stand in for a slow or hung backend.
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ import json
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 
 # Options per command: name -> takes a value. Mirrors `ix <cmd> --help` on
@@ -84,6 +86,10 @@ def main(argv: list[str]) -> None:
                 "IX_AUTO_MAP": os.environ.get("IX_AUTO_MAP"),
             }) + "\n")
 
+    delay = os.environ.get("FAKE_IX_SLEEP")
+    if delay:
+        time.sleep(float(delay))
+
     if not argv or "--help" in argv or "-h" in argv:
         return
     command, args = argv[0], argv[1:]
@@ -125,6 +131,13 @@ def main(argv: list[str]) -> None:
 
     if command == "text":
         print(json.dumps({"results": [{"path": "src/fake.py", "line": 1}]}))
+        return
+
+    if command == "overview":
+        target = positionals[0] if positionals else "fake"
+        print(json.dumps({
+            "keyItems": [{"name": Path(target).stem}], "childrenByKind": {"function": 1},
+        }))
         return
 
     print("{}")

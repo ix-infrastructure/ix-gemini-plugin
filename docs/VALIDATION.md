@@ -175,9 +175,9 @@ Also removed the unused `emit_json` import from `after_tool.py` and `session_end
 | File | Assessment |
 |---|---|
 | `common.py` | Fixed — `spawn_background_ix_map` wrapped in try/except |
-| `session_start.py` | Correct — emits `additionalContext` |
-| `before_agent.py` | Correct — emits `additionalContext`, TTL-gated briefing |
-| `before_tool.py` | Correct — emits `decision: allow` + `systemMessage` |
+| `session_start.py` | ~~Correct — emits `additionalContext`~~ Wrong: Gemini reads only `hookSpecificOutput.additionalContext`; fixed in 1.2.1 |
+| `before_agent.py` | ~~Correct — emits `additionalContext`~~ Wrong, as above; fixed in 1.2.1 |
+| `before_tool.py` | ~~Correct — emits `decision: allow` + `systemMessage`~~ `systemMessage` reaches the user only; removed in 1.2.1, context moved to `after_tool.py` |
 | `after_tool.py` | Fixed — main() fail-safe; unused import removed |
 | `session_end.py` | Fixed — main() fail-safe; unused import removed |
 
@@ -217,10 +217,10 @@ The following require a running Gemini CLI installation to verify:
 
 - [ ] `gemini extensions install .` succeeds and extension appears in `gemini extensions list`
 - [ ] MCP server (`ix mcp --tools=all`, cwd `${workspacePath}`) starts automatically from `gemini-extension.json` — `ix_context`, `ix_search`, `ix_impact`, `ix_neighbors`, `ix_read` visible in Gemini's tool list, answering for the opened project
-- [ ] `SessionStart` hook fires and `additionalContext` is injected
+- [ ] `SessionStart` hook fires and `hookSpecificOutput.additionalContext` is injected
 - [ ] `BeforeAgent` hook fires and briefing is injected (when Ix Pro available)
-- [ ] `BeforeTool` fires on `run_shell_command` grep/cat calls and injects `systemMessage`
-- [ ] `AfterTool` fires after file-writing shell commands without error
+- [ ] `AfterTool` fires on `run_shell_command` grep/cat calls and appends `<hook_context>` to the tool result
+- [ ] `AfterTool` fires after file-writing shell commands and `write_file`/`replace` without error
 - [ ] `SessionEnd` hook fires without error
 - [ ] Hook failure (missing `ix`) does not crash Gemini CLI — logs to stderr only
 - [ ] Skills appear in `/skills list`

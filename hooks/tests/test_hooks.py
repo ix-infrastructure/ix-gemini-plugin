@@ -91,18 +91,35 @@ class SessionEndHookTest(unittest.TestCase):
         assert result.returncode == 0, f"expected exit 0, got {result.returncode}\nstderr: {result.stderr}"
 
 
-# ── before_tool ───────────────────────────────────────────────────────────────
+# ── every registered hook ─────────────────────────────────────────────────────
 
-class BeforeToolHookTest(unittest.TestCase):
+class RegisteredHooksTest(unittest.TestCase):
+    """Each script hooks.json registers exits 0 and prints nothing or one JSON object.
 
-    def test_before_tool_empty_stdin_exits_zero(self) -> None:
-        result = _run_hook("before_tool.py", stdin="")
-        assert result.returncode == 0, f"expected exit 0, got {result.returncode}\nstderr: {result.stderr}"
+    Gemini parses a hook's whole stdout as JSON and treats any other text as a
+    plain-text systemMessage (hookRunner.ts).
+    """
 
+    def _scripts(self) -> list[str]:
+        config = json.loads((HOOKS_DIR / "hooks.json").read_text())["hooks"]
+        scripts = []
+        for definitions in config.values():
+            for definition in definitions:
+                for hook in definition["hooks"]:
+                    scripts.append(hook["command"].rsplit("/", 1)[-1])
+        return scripts
 
-    def test_before_tool_malformed_json_exits_zero(self) -> None:
-        result = _run_hook("before_tool.py", stdin="not json")
-        assert result.returncode == 0, f"expected exit 0, got {result.returncode}\nstderr: {result.stderr}"
+    def test_registered_scripts_exist(self) -> None:
+        for script in self._scripts():
+            assert (HOOKS_DIR / script).is_file(), script
+
+    def test_bad_stdin_exits_zero_with_json_or_nothing(self) -> None:
+        for script in self._scripts():
+            for stdin in ("", "not json {{{", "[]"):
+                result = _run_hook(script, stdin=stdin)
+                assert result.returncode == 0, f"{script} {stdin!r}: {result.stderr}"
+                if result.stdout.strip():
+                    assert isinstance(json.loads(result.stdout), dict), (script, result.stdout)
 
 
 # ── _is_write_command ─────────────────────────────────────────────────────────
