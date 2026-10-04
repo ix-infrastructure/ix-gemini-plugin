@@ -92,6 +92,66 @@ jobs:
       - name: Run hook tests
         run: python -m unittest discover -s hooks/tests -p 'test_*.py' -v
 
+  # ── Real ix ──────────────────────────────────────────────────────────────
+  # hook-tests use a strict fake ix whose options are copied by hand, so a
+  # renamed flag or changed output key in Ix leaves them green. This job
+  # installs a released ix (checksum-verified, pinned) and runs the hooks and
+  # the extension's `ix mcp` server against it, with no backend: IX_ENDPOINT
+  # points at a closed port, as for a user whose backend is down. Bump IX_VERSION
+  # deliberately; a release that drops a flag the plugin sends turns this red.
+  real-ix:
+    name: Real ix CLI
+    runs-on: ubuntu-latest
+    env:
+      IX_VERSION: '0.12.0'
+      # sha256 of ix-<IX_VERSION>-linux-amd64.tar.gz, pinned here so a release
+      # asset replaced after the fact (tarball and .sha256 together) fails the
+      # job. Bump it with IX_VERSION.
+      IX_SHA256: 'b9606253c5e300dbf4b933c82c6e0dc1d40a028aa344b5dc90dfe6dc34d89817'
+      IX_ENDPOINT: 'http://127.0.0.1:1'
+      IX_NO_UPDATE_CHECK: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # The ix launcher runs on Node 22+.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      # `ix text` shells out to ripgrep.
+      - name: Install ripgrep
+        run: sudo apt-get update -q && sudo apt-get install -y -q ripgrep
+
+      - name: Install ix ${{ env.IX_VERSION }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/ix-dl"
+          mkdir -p "$dir" "$RUNNER_TEMP/ix"
+          cd "$dir"
+          asset="ix-${IX_VERSION}-linux-amd64.tar.gz"
+          base="https://github.com/ix-infrastructure/Ix/releases/download/v${IX_VERSION}"
+          curl -fsSLO "$base/$asset"
+          curl -fsSLO "$base/$asset.sha256"
+          sha256sum -c "$asset.sha256"
+          echo "$IX_SHA256  $asset" | sha256sum -c -
+          tar -xzf "$asset" --strip-components=1 -C "$RUNNER_TEMP/ix"
+          echo "$RUNNER_TEMP/ix" >> "$GITHUB_PATH"
+
+      - name: Run hooks and MCP server against the real ix
+        run: |
+          set -euo pipefail
+          export IX_HOME="$RUNNER_TEMP/ix-home"
+          mkdir -p "$IX_HOME"
+          command -v ix
+          ix --version
+          IX_EXPECTED_VERSION="$IX_VERSION" python -m unittest discover -s hooks/real_ix_tests -p 'test_*.py' -v
+
   # ── Aggregate gate ───────────────────────────────────────────────────────
   # One stable required-status-check context. Fails if any needed job failed OR
   # was skipped/cancelled, so the job graph can be reshaped without orphaning
@@ -99,12 +159,14 @@ jobs:
   ci-success:
     name: CI Passed
     if: always()
-    needs: [validate, hook-tests]
+    needs: [validate, hook-tests, real-ix]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded
         run: |
           echo "validate=${{ needs.validate.result }}"
           echo "hook-tests=${{ needs.hook-tests.result }}"
+          echo "real-ix=${{ needs.real-ix.result }}"
           [ "${{ needs.validate.result }}" = "success" ]
           [ "${{ needs.hook-tests.result }}" = "success" ]
+          [ "${{ needs.real-ix.result }}" = "success" ]
