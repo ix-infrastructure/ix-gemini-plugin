@@ -104,6 +104,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       IX_VERSION: '0.12.0'
+      # sha256 of ix-<IX_VERSION>-linux-amd64.tar.gz, pinned here so a release
+      # asset replaced after the fact (tarball and .sha256 together) fails the
+      # job. Bump it with IX_VERSION.
+      IX_SHA256: 'b9606253c5e300dbf4b933c82c6e0dc1d40a028aa344b5dc90dfe6dc34d89817'
       IX_ENDPOINT: 'http://127.0.0.1:1'
       IX_NO_UPDATE_CHECK: '1'
     steps:
@@ -135,6 +139,7 @@ jobs:
           curl -fsSLO "$base/$asset"
           curl -fsSLO "$base/$asset.sha256"
           sha256sum -c "$asset.sha256"
+          echo "$IX_SHA256  $asset" | sha256sum -c -
           tar -xzf "$asset" --strip-components=1 -C "$RUNNER_TEMP/ix"
           echo "$RUNNER_TEMP/ix" >> "$GITHUB_PATH"
 
