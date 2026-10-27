@@ -375,6 +375,164 @@ def run_ix_text(
     return fragment or result.stdout.strip() or None
 
 
+# ── Graph lookups ────────────────────────────────────────────────────────────
+#
+# A graph lookup (`locate`, `overview`, `impact`, ...) that could not resolve
+# its target still answers on stdout (Ix #853): exit 2 with the candidates when
+# the target is ambiguous, 3 with suggestions when it is not found, 4 when the
+# workspace is not mapped. Before #853 all of these exited 1, so on exit 1 the
+# record's slug decides. Anything else non-zero is a real error.
+
+LOOKUP_OK = "ok"
+LOOKUP_AMBIGUOUS = "ambiguous"
+LOOKUP_NOT_FOUND = "not_found"
+LOOKUP_NOT_MAPPED = "not_mapped"
+LOOKUP_ERROR = "error"
+
+_LOOKUP_EXIT_OUTCOMES = {2: LOOKUP_AMBIGUOUS, 3: LOOKUP_NOT_FOUND, 4: LOOKUP_NOT_MAPPED}
+_LOOKUP_SLUG_OUTCOMES = {
+    "ambiguous_target": LOOKUP_AMBIGUOUS,
+    "unresolved_target": LOOKUP_NOT_FOUND,
+    "workspace_not_mapped": LOOKUP_NOT_MAPPED,
+}
+# The not-mapped line is shown at most once per workspace in this window.
+NOT_MAPPED_TTL_SECONDS = 1800
+NOT_MAPPED_LINE = (
+    "this workspace is not mapped in Ix yet, so graph lookups are off;"
+    " ask the user before running `ix map` at the project root"
+)
+_MAX_LISTED = 5
+
+
+def run_ix_lookup(
+    argv: list[str], cwd: str | Path | None = None, timeout: float = 10
+) -> tuple[str, dict | list | None]:
+    """Run a graph lookup and say how ix answered: ``(outcome, payload)``.
+
+    Exit 0 is ``LOOKUP_OK`` with whatever ``run_ix_json`` would have returned.
+    A timeout, a real error or stdout that is not a JSON object is
+    ``(LOOKUP_ERROR, None)``, which callers treat as they always have.
+    """
+    result = run_command(argv, cwd=cwd, timeout=timeout)
+    if result is None:
+        return LOOKUP_ERROR, None
+    payload = parse_json_output(result.stdout)
+    if result.returncode == 0:
+        return (LOOKUP_OK, payload) if payload is not None else (LOOKUP_ERROR, None)
+    if not isinstance(payload, dict):
+        return LOOKUP_ERROR, None
+    outcome = _LOOKUP_EXIT_OUTCOMES.get(result.returncode)
+    if outcome is None and result.returncode == 1:
+        # `locate` names an ambiguity under `code`; everything else under `error`.
+        slug = payload.get("error") or payload.get("code")
+        outcome = _LOOKUP_SLUG_OUTCOMES.get(slug) if isinstance(slug, str) else None
+    if outcome is None:
+        return LOOKUP_ERROR, None
+    return outcome, payload
+
+
+def _not_mapped_stamp_path(root: str | Path | None) -> Path:
+    return CACHE_DIR / "not-mapped" / f"{_root_key(root)}.stamp"
+
+
+def not_mapped_line(root: str | Path | None) -> str:
+    """NOT_MAPPED_LINE, or "" if it was shown for this workspace in the window.
+
+    The search and read hooks share the stamp, so an unmapped workspace hears
+    about it once rather than on every grep and cat.
+    """
+    path = _not_mapped_stamp_path(root)
+    try:
+        if time.time() - path.stat().st_mtime < NOT_MAPPED_TTL_SECONDS:
+            return ""
+    except OSError:
+        pass
+    try:
+        _ensure_private_dir(path.parent)
+        path.write_text(str(time.time()))
+    except OSError as exc:
+        log(f"[ix] not-mapped stamp failed (non-fatal): {exc}")
+    return NOT_MAPPED_LINE
+
+
+def _entity_label(item: object) -> str:
+    """`name (kind, path:line)` for a candidate or suggestion; "" if unusable."""
+    if isinstance(item, str):
+        return item.strip()
+    if not isinstance(item, dict) or not item.get("name"):
+        return ""
+    where = str(item.get("path") or "")
+    line = item.get("line") or item.get("startLine")
+    if where and isinstance(line, int):
+        where += f":{line}"
+    details = [part for part in (str(item.get("kind") or ""), where) if part]
+    return str(item["name"]) + (f" ({', '.join(details)})" if details else "")
+
+
+def _numbered_candidates(payload: dict | list | None) -> list[tuple[int, dict, str]]:
+    """``(pick, candidate, label)`` for each usable candidate, in ix's order."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("candidates"), list):
+        return []
+    numbered = []
+    for position, candidate in enumerate(payload["candidates"], start=1):
+        label = _entity_label(candidate) if isinstance(candidate, dict) else ""
+        if not label:
+            continue
+        pick = candidate.get("pick")
+        numbered.append((pick if isinstance(pick, int) else position, candidate, label))
+    return numbered
+
+
+def summarize_ambiguous(payload: dict | list | None, command: str) -> str:
+    """The candidates of an ambiguous lookup and how to retry ``command``."""
+    numbered = _numbered_candidates(payload)
+    if not numbered:
+        return ""
+    listed = "; ".join(f"[{pick}] {label}" for pick, _, label in numbered[:_MAX_LISTED])
+    if len(numbered) > _MAX_LISTED:
+        listed += f" (+{len(numbered) - _MAX_LISTED} more)"
+    return f"ambiguous: {listed}; retry with {command} --pick <n>, or --path <file>"
+
+
+def summarize_unresolved(payload: dict | list | None, target: str) -> str:
+    """Not-found line with ix's suggestions; "" when there are none to show."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("suggestions"), list):
+        return ""
+    labels = [label for label in map(_entity_label, payload["suggestions"]) if label]
+    if not labels:
+        return ""
+    return f"no symbol '{target}'; did you mean: " + "; ".join(labels[:_MAX_LISTED])
+
+
+def _summarize_read_ambiguity(
+    payload: dict | list | None, filename: str, file_path: str, root: str | Path | None
+) -> str:
+    """Point an ambiguous bare filename at the file actually read.
+
+    The hook knows which file was read, so it names that file's candidate
+    rather than listing every file with the same name.
+    """
+    base = Path(root or os.getcwd()).resolve()
+    read_path = Path(file_path)
+    absolute = (read_path if read_path.is_absolute() else base / read_path).resolve()
+    try:
+        rel = absolute.relative_to(base).as_posix()
+    except ValueError:
+        rel = str(absolute)
+    target = shlex.quote(filename)
+    for pick, candidate, label in _numbered_candidates(payload):
+        where = Path(str(candidate.get("path") or ""))
+        if where.parts and (where if where.is_absolute() else base / where).resolve() == absolute:
+            return (
+                f"several graph entries are named {filename}; this file is [{pick}] {label}:"
+                f" ix overview {target} --pick {pick}, or --path {shlex.quote(rel)}"
+            )
+    return (
+        f"several graph entries are named {filename}:"
+        f" ix overview {target} --path {shlex.quote(rel)}"
+    )
+
+
 # ── Error capture ────────────────────────────────────────────────────────────
 
 def _is_pro_feature_message(message: str, stderr: str | None = None) -> bool:
@@ -632,30 +790,50 @@ def summarize_inventory(payload: dict | list | None) -> str:
 
 # ── Parallel execution ───────────────────────────────────────────────────────
 
-def run_parallel_json(
-    calls: list[tuple[str, list[str], int]],
-    cwd: str | Path | None,
-    deadline: Deadline | None = None,
-) -> dict[str, dict | list | None]:
-    """Run the calls at once; each is cut off at its own cap or the deadline."""
-    results: dict[str, dict | list | None] = {}
+def _run_parallel(calls, cwd, deadline, runner, skipped):
+    results = {}
     runnable: list[tuple[str, list[str], float]] = []
     for name, argv, cap in calls:
         timeout = _call_timeout(cap, deadline)
         if timeout is None:
-            results[name] = None
+            results[name] = skipped
         else:
             runnable.append((name, argv, timeout))
     if not runnable:
         return results
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(runnable)) as executor:
         future_map = {
-            executor.submit(run_ix_json, argv, cwd=cwd, timeout=timeout): name
+            executor.submit(runner, argv, cwd=cwd, timeout=timeout): name
             for name, argv, timeout in runnable
         }
         for future in concurrent.futures.as_completed(future_map):
             results[future_map[future]] = future.result()
     return results
+
+
+def run_parallel_json(
+    calls: list[tuple[str, list[str], int]],
+    cwd: str | Path | None,
+    deadline: Deadline | None = None,
+) -> dict[str, dict | list | None]:
+    """Run the calls at once; each is cut off at its own cap or the deadline."""
+    return _run_parallel(calls, cwd, deadline, run_ix_json, None)
+
+
+def run_parallel_lookup(
+    calls: list[tuple[str, list[str], int]],
+    cwd: str | Path | None,
+    deadline: Deadline | None = None,
+) -> dict[str, tuple[str, dict | list | None]]:
+    """``run_parallel_json`` with each answer as ``run_ix_lookup`` reads it."""
+    return _run_parallel(calls, cwd, deadline, run_ix_lookup, (LOOKUP_ERROR, None))
+
+
+def _ok_payload(answer: tuple[str, dict | list | None] | None) -> dict | list | None:
+    """The payload of a successful answer; None for any other, as before #853."""
+    if answer is None or answer[0] != LOOKUP_OK:
+        return None
+    return answer[1]
 
 
 # ── Message builders ─────────────────────────────────────────────────────────
@@ -671,10 +849,18 @@ def build_search_message(
     if looks_plain_pattern(pattern):
         # `ix locate` has no --limit: it returns one resolved target (or candidates).
         calls.append(("locate", ["ix", "locate", pattern, "--format", "json"], 10))
-    results = run_parallel_json(calls, cwd, deadline)
+    results = run_parallel_lookup(calls, cwd, deadline)
 
-    text_part = summarize_text_results(results.get("text"))
-    locate_part = summarize_locate_results(results.get("locate"))
+    text_part = summarize_text_results(_ok_payload(results.get("text")))
+    locate_outcome, locate_payload = results.get("locate", (LOOKUP_ERROR, None))
+    if locate_outcome == LOOKUP_AMBIGUOUS:
+        locate_part = summarize_ambiguous(locate_payload, f"ix locate '{pattern}'")
+    elif locate_outcome == LOOKUP_NOT_FOUND:
+        locate_part = summarize_unresolved(locate_payload, pattern)
+    elif locate_outcome == LOOKUP_NOT_MAPPED:
+        locate_part = not_mapped_line(cwd)
+    else:
+        locate_part = summarize_locate_results(_ok_payload(results.get("locate")))
     if not text_part and not locate_part:
         return None
 
@@ -695,7 +881,7 @@ def build_read_message(
     filename = Path(file_path).name
     if not filename:
         return None
-    results = run_parallel_json(
+    results = run_parallel_lookup(
         [
             ("inventory", ["ix", "inventory", "--kind", "file", "--path", filename, "--format", "json"], 10),
             ("overview", ["ix", "overview", filename, "--format", "json"], 10),
@@ -704,16 +890,31 @@ def build_read_message(
         cwd,
         deadline,
     )
-    entity_part = summarize_overview(results.get("overview")) or summarize_inventory(results.get("inventory"))
-    risk_part = summarize_impact(results.get("impact"))
-    if not entity_part and not risk_part:
+    entity_part = (
+        summarize_overview(_ok_payload(results.get("overview")))
+        or summarize_inventory(_ok_payload(results.get("inventory")))
+    )
+    risk_part = summarize_impact(_ok_payload(results.get("impact")))
+    # A file the graph does not know (exit 3) is ordinary for a read, so it
+    # stays silent; ambiguity and an unmapped workspace are worth a line.
+    lookup_part = ""
+    answers = [results.get(name, (LOOKUP_ERROR, None)) for name in ("overview", "impact", "inventory")]
+    ambiguous = [payload for outcome, payload in answers[:2] if outcome == LOOKUP_AMBIGUOUS]
+    if ambiguous:
+        lookup_part = _summarize_read_ambiguity(ambiguous[0], filename, file_path, cwd)
+    elif not entity_part and not risk_part and any(o == LOOKUP_NOT_MAPPED for o, _ in answers):
+        lookup_part = not_mapped_line(cwd)
+    if not entity_part and not risk_part and not lookup_part:
         return None
     pieces = [f"[ix] {filename}"]
     if entity_part:
         pieces.append(entity_part)
     if risk_part:
         pieces.append(risk_part)
-    pieces.append("Use ix read <symbol> to get just a symbol's source")
+    if lookup_part:
+        pieces.append(lookup_part)
+    if entity_part or risk_part:
+        pieces.append("Use ix read <symbol> to get just a symbol's source")
     return " | ".join(pieces)
 
 
