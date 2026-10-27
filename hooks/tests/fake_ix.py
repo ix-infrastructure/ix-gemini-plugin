@@ -16,6 +16,13 @@ $FAKE_IX_LOG. `ix status --format json` reports graphCompleted from
 $FAKE_IX_GRAPH_COMPLETED ("1" = true); $FAKE_IX_STATUS=fail|garbage makes it
 exit 1 or print non-JSON. $FAKE_IX_SLEEP=<seconds> makes every call (after it
 is logged) sleep first, to stand in for a slow or hung backend.
+
+$FAKE_IX_LOOKUP makes the graph lookups (`locate`, `overview`, `impact`) answer
+the way Ix #853 does, on stdout: `ambiguous` exits 2 with candidates,
+`not_found` exits 3 with suggestions (none when $FAKE_IX_SUGGESTIONS=0),
+`not_mapped` exits 4 (and also covers `inventory`), `error` exits 1 with a
+non-lookup error record and `garbage` exits 2 with non-JSON. With
+$FAKE_IX_LEGACY_EXIT=1 every one of them exits 1, as ix did before #853.
 """
 from __future__ import annotations
 
@@ -46,6 +53,54 @@ _OPTIONS: dict[str, dict[str, bool]] = {
     },
     "smells": {**_COMMON},
 }
+
+
+_LOOKUP_COMMANDS = {"locate", "overview", "impact"}
+
+
+def _lookup_answer(command: str, target: str) -> None:
+    """Answer a graph lookup per $FAKE_IX_LOOKUP; return only when it is unset."""
+    mode = os.environ.get("FAKE_IX_LOOKUP", "")
+    if not mode or not (command in _LOOKUP_COMMANDS or (command == "inventory" and mode == "not_mapped")):
+        return
+    legacy = os.environ.get("FAKE_IX_LEGACY_EXIT") == "1"
+    if mode == "ambiguous":
+        # `locate` reports the ambiguity under `code`, the others under `error`.
+        key = "code" if command == "locate" else "error"
+        body, code = {
+            key: "ambiguous_target",
+            "message": f"'{target}' matches 2 entities",
+            "candidates": [
+                {"name": target, "kind": "function", "path": f"src/{target}", "line": 12},
+                {"name": target, "kind": "method", "path": f"lib/{target}", "line": 40},
+            ],
+        }, 2
+    elif mode == "not_found":
+        suggestions: list = []
+        if os.environ.get("FAKE_IX_SUGGESTIONS") != "0":
+            suggestions = [
+                {"name": f"{target}_v2", "kind": "function", "path": "src/fake.py", "line": 3},
+                f"{target}s",
+            ]
+        body, code = {
+            "error": "unresolved_target",
+            "message": f"No entity named '{target}'",
+            "suggestions": suggestions,
+        }, 3
+    elif mode == "not_mapped":
+        body, code = {
+            "error": "workspace_not_mapped",
+            "message": "This workspace has not been mapped. Run `ix map` first.",
+        }, 4
+    elif mode == "error":
+        body, code = {"error": "backend_unreachable", "message": "Ix backend unreachable"}, 1
+    elif mode == "garbage":
+        print("not json at all")
+        sys.exit(1 if legacy else 2)
+    else:
+        return
+    print(json.dumps(body))
+    sys.exit(1 if legacy else code)
 
 
 def _fail(message: str) -> None:
@@ -97,6 +152,7 @@ def main(argv: list[str]) -> None:
         print("{}")
         return
     opts, positionals = _parse(command, args)
+    _lookup_answer(command, positionals[0] if positionals else "fake")
 
     if command == "status":
         mode = os.environ.get("FAKE_IX_STATUS", "")
