@@ -98,9 +98,40 @@ class GuardedMapTest(_FakeIxCase):
     def test_status_failure_or_non_json_never_maps(self) -> None:
         os.environ["FAKE_IX_GRAPH_COMPLETED"] = "1"
         for mode in ("fail", "garbage"):
+            # A fresh root per mode, so the first mode's debounce stamp does
+            # not stop the second mode from reaching `ix status`.
+            root = _git_init(self.tmp / f"repo-{mode}")
             os.environ["FAKE_IX_STATUS"] = mode
-            self.assertIsNone(self._request(self.repo), mode)
+            self.assertIsNone(self._request(root), mode)
+        self.assertEqual(2, len(self.calls("status")))
         self.assertEqual([], self.calls("map"))
+
+    def test_unmapped_project_asks_status_once_per_debounce_window(self) -> None:
+        os.environ["FAKE_IX_GRAPH_COMPLETED"] = "0"
+        self.assertIsNone(self._request(self.repo))
+        self.assertIsNone(self._request(self.repo))
+        self.assertEqual(1, len(self.calls("status")))
+        self.assertEqual([], self.calls("map"))
+
+    def test_unreachable_backend_asks_status_once_per_debounce_window(self) -> None:
+        os.environ["FAKE_IX_GRAPH_COMPLETED"] = "1"
+        os.environ["FAKE_IX_STATUS"] = "fail"
+        self.assertIsNone(self._request(self.repo))
+        self.assertIsNone(self._request(self.repo))
+        self.assertEqual(1, len(self.calls("status")))
+        self.assertEqual([], self.calls("map"))
+
+    def test_unmapped_project_is_asked_again_after_debounce_window(self) -> None:
+        os.environ["FAKE_IX_GRAPH_COMPLETED"] = "0"
+        self.assertIsNone(self._request(self.repo))
+        stamp = self.common._map_stamp_path(self.repo)
+        old = time.time() - self.common.MAP_DEBOUNCE_SECONDS - 5
+        os.utime(stamp, (old, old))
+        # Mapped by now: the next request after the window maps it.
+        os.environ["FAKE_IX_GRAPH_COMPLETED"] = "1"
+        self.assertIsNotNone(self._request(self.repo))
+        self.assertEqual(2, len(self.calls("status")))
+        self.assertEqual(1, len(self.calls("map")))
 
     def test_mapped_project_maps_root_exactly(self) -> None:
         os.environ["FAKE_IX_GRAPH_COMPLETED"] = "1"
@@ -235,6 +266,24 @@ class HookEndToEndTest(_FakeIxCase):
         maps = self._wait_for_map()
         self.assertEqual(["map", str(self.repo), "--silent"], maps[0]["argv"])
         self.assertEqual("1", maps[0]["IX_AUTO_MAP"])
+
+    def test_after_tool_edits_in_unmapped_repo_ask_status_once(self) -> None:
+        self.env["FAKE_IX_GRAPH_COMPLETED"] = "0"
+        target = self.repo / "x.py"
+        target.write_text("x = 1\n")
+        events = [
+            {"cwd": str(self.repo), "tool_name": "write_file",
+             "tool_input": {"file_path": str(target)}},
+            {"cwd": str(self.repo), "tool_name": "replace",
+             "tool_input": {"file_path": str(target)}},
+            {"cwd": str(self.repo), "tool_name": "run_shell_command",
+             "tool_input": {"command": "sed -i s/a/b/ x.py"}},
+        ]
+        for event in events:
+            result = self._run("after_tool.py", event)
+            self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(1, len(self.calls("status")))
+        self.assertEqual([], self.calls("map"))
 
     def test_after_tool_stderr_redirect_is_not_a_write(self) -> None:
         event = {"cwd": str(self.repo), "tool_input": {"command": "ls src 2>/dev/null"}}
