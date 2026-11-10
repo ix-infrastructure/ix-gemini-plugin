@@ -60,6 +60,42 @@ New-Item -ItemType Directory -Path $hooksTarget -Force | Out-Null
 Copy-Item (Join-Path $scriptDir "hooks\*.py") $hooksTarget
 Copy-Item (Join-Path $scriptDir "hooks\hooks.json") $hooksTarget
 
+# hooks.json starts the hooks with `python3`, which the python.org installer
+# does not create (it provides `python` and the `py` launcher). Write the first
+# interpreter that really runs Python 3 into the installed copy. Bare names
+# only, so the command reads the same in any shell Gemini runs it with. The
+# Microsoft Store alias for an uninstalled Python exits non-zero and is skipped.
+function Find-HookPython {
+    foreach ($candidate in @("python3", "python", "py -3")) {
+        $parts = @($candidate -split " ")
+        $found = Get-Command $parts[0] -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if (-not $found) { continue }
+        $rest = @($parts | Select-Object -Skip 1)
+        try {
+            $major = & $found.Source @rest -c "import sys; print(sys.version_info[0])" 2>$null
+        } catch {
+            continue
+        }
+        if ($LASTEXITCODE -eq 0 -and "$major".Trim() -eq "3") {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+$hookPython = Find-HookPython
+if (-not $hookPython) {
+    Write-Warning "No Python 3 found (tried python3, python, py -3). The hooks need one on PATH."
+} elseif ($hookPython -ne "python3") {
+    $hooksJson = Join-Path $hooksTarget "hooks.json"
+    $text = [System.IO.File]::ReadAllText($hooksJson)
+    $text = $text -replace '("command":\s*")python3 ', ('${1}' + $hookPython + ' ')
+    # UTF-8 without a BOM: JSON.parse rejects one.
+    [System.IO.File]::WriteAllText($hooksJson, $text, (New-Object System.Text.UTF8Encoding $false))
+    Write-Host "Hooks will run with '$hookPython'."
+}
+
 $skillsTarget = Join-Path $targetDir "skills"
 Get-ChildItem (Join-Path $scriptDir "skills") -Directory | ForEach-Object {
     $skillDoc = Join-Path $_.FullName "SKILL.md"

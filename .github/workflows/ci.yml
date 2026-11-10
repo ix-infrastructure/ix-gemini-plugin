@@ -92,6 +92,31 @@ jobs:
       - name: Run hook tests
         run: python -m unittest discover -s hooks/tests -p 'test_*.py' -v
 
+  # ── Windows launch ───────────────────────────────────────────────────────
+  # On Windows the hooks start the Ix installer's nested ix.cmd launcher. These
+  # tests use the installer's two-level launcher text verbatim and start it both
+  # ways (node directly, and through cmd.exe), then run install.ps1 and the hooks
+  # from a path with a space. The rest of hook-tests assumes POSIX.
+  windows-launch:
+    name: Windows launch tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      # The fake launcher runs a fake main.js on node, as the real one does.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Run Windows launch tests
+        run: python -m unittest discover -s hooks/tests -p 'test_windows_launch.py' -v
+
   # ── Real ix ──────────────────────────────────────────────────────────────
   # hook-tests use a strict fake ix whose options are copied by hand, so a
   # renamed flag or changed output key in Ix leaves them green. This job
@@ -159,14 +184,16 @@ jobs:
   ci-success:
     name: CI Passed
     if: always()
-    needs: [validate, hook-tests, real-ix]
+    needs: [validate, hook-tests, windows-launch, real-ix]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded
         run: |
           echo "validate=${{ needs.validate.result }}"
           echo "hook-tests=${{ needs.hook-tests.result }}"
+          echo "windows-launch=${{ needs.windows-launch.result }}"
           echo "real-ix=${{ needs.real-ix.result }}"
           [ "${{ needs.validate.result }}" = "success" ]
           [ "${{ needs.hook-tests.result }}" = "success" ]
+          [ "${{ needs.windows-launch.result }}" = "success" ]
           [ "${{ needs.real-ix.result }}" = "success" ]

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 
 def _state_dir() -> Path:
@@ -174,21 +175,314 @@ def find_workspace_root(cwd: str | None) -> Path:
 def run_command(
     argv: list[str], cwd: str | Path | None = None, timeout: float = 10
 ) -> subprocess.CompletedProcess[str] | None:
+    if os.name != "nt":
+        try:
+            return subprocess.run(
+                argv,
+                cwd=str(cwd) if cwd else None,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
     try:
-        return subprocess.run(
-            argv,
-            cwd=str(cwd) if cwd else None,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        launch = windows_launch(argv)
+    except IxArgumentError as exc:
+        log(f"[ix] {exc}")
+        return None
+    except OSError:
+        # ix is not on PATH: report it as missing, never start a bare `ix`.
+        return None
+    try:
+        return _run_windows(launch, cwd, timeout)
     except (OSError, subprocess.SubprocessError):
         return None
 
 
 def ix_available() -> bool:
-    return shutil.which("ix") is not None
+    if os.name != "nt":
+        return shutil.which("ix") is not None
+    return _ix_launcher() is not None
+
+
+# ── Starting ix on Windows ───────────────────────────────────────────────────
+#
+# CreateProcess does not resolve the bare name `ix` to the `ix.cmd` the Ix
+# Windows installer puts on PATH, so on Windows the hooks resolve it themselves.
+# That `ix.cmd` is a nested launcher: `<IX_HOME>\bin\ix.cmd` runs
+# `<IX_HOME>\cli\ix.cmd`, which runs `node "%~dp0cli\dist\cli\main.js" %*`.
+# Started through cmd.exe, an argument is parsed by cmd.exe once per level, and
+# arguments here come from the agent's tool calls (search patterns, file
+# paths), so they could be interpreted by cmd.exe through the installer's
+# nested launcher. Two routes, in order:
+#
+# A. For the installer layout, start node with the CLI's script directly, with
+#    no shell at all. This is the normal route.
+# B. Otherwise start the .cmd through cmd.exe with quoting that holds at any
+#    depth (the scheme Rust's standard library uses for batch files): every
+#    argument in double quotes, `"` doubled, backslashes before a quote or the
+#    end doubled, `%` neutralised, CR/LF refused, no carets, `/v:off`. The
+#    child gets NoDefaultCurrentDirectoryInExePath=1 so a bare `node` inside
+#    the launcher is not looked up in the workspace (the hook's cwd).
+#
+# If PATH has no ix, ix is reported as not installed; a bare `ix` is never
+# started (Windows would look in the current directory first).
+#
+# POSIX is untouched: the bare argv, no shell.
+
+class IxArgumentError(ValueError):
+    """An argument cmd.exe cannot carry intact, so ix is not started."""
+
+
+class WindowsLaunch(NamedTuple):
+    """What to hand subprocess on Windows.
+
+    ``args`` is a list (started with no shell) or, for route B, the verbatim
+    cmd.exe command line. ``env`` None inherits the caller's environment.
+    """
+
+    args: list[str] | str
+    executable: str | None
+    env: dict[str, str] | None
+
+
+# Only what CreateProcess (.exe/.com) or cmd.exe (.cmd/.bat) can start.
+_LAUNCHABLE_EXTENSIONS = (".com", ".exe", ".bat", ".cmd")
+_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+_UNSET = object()
+_ix_launcher_cache: object = _UNSET
+
+# The launch line of the installer's `bin\ix.cmd`:
+#   "%~dp0..\cli\ix.cmd" %*
+# The file around it is several lines (`@echo off`, an `if not exist ... goto`
+# guard, `exit /b %errorlevel%`, and a `:ix_missing` block of `echo` lines).
+_OUTER_LAUNCH_RE = re.compile(
+    r'^@?\s*(?:call\s+)?"%~dp0\.\.\\cli\\ix\.cmd"\s+%\*\s*$', re.IGNORECASE
+)
+# The launch line of `cli\ix.cmd` from the Ix release:
+#   node "%~dp0cli\dist\cli\main.js" %*
+_INNER_LAUNCH_RE = re.compile(
+    r'^@?\s*(?:"(?P<quoted>[^"]+)"|(?P<bare>node(?:\.exe)?))\s+"(?P<script>[^"]+)"\s+%\*\s*$',
+    re.IGNORECASE,
+)
+
+
+def find_on_path(
+    name: str,
+    path_env: str | None = None,
+    pathext: str | None = None,
+    extensions: tuple[str, ...] = _LAUNCHABLE_EXTENSIONS,
+) -> str | None:
+    """Windows-style PATH x PATHEXT lookup that never looks in the current directory.
+
+    Empty and relative PATH entries are skipped, so a launcher planted in the
+    project cannot stand in for ix. Only ``extensions`` (in PATHEXT order) count.
+    """
+    if path_env is None:
+        path_env = os.environ.get("PATH", "")
+    if pathext is None:
+        pathext = os.environ.get("PATHEXT") or _DEFAULT_PATHEXT
+    allowed = {ext.lower() for ext in extensions}
+    # Lower case: the Windows file system ignores case either way.
+    exts = [ext.lower() for ext in pathext.split(";") if ext.lower() in allowed]
+    for entry in path_env.split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or not os.path.isabs(entry):
+            continue
+        for ext in exts:
+            candidate = os.path.join(entry, name + ext)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
+def _batch_lines(path: str) -> list[str] | None:
+    try:
+        # utf-8-sig: a launcher written by Windows PowerShell may start with a BOM.
+        text = Path(path).read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return None
+    return [line.strip() for line in text.splitlines()]
+
+
+def _expand_dp0(value: str, directory: str) -> str | None:
+    """Substitute `%~dp0` with ``directory``; None if cmd.exe would expand anything else."""
+    expanded = re.sub(r"%~dp0", lambda _m: directory + "\\", value, flags=re.IGNORECASE)
+    if "%" in expanded or "!" in expanded:
+        return None
+    # The launchers use `\`; on Windows this changes nothing.
+    return os.path.normpath(expanded.replace("\\", os.sep))
+
+
+def installer_node_command(ix_cmd: str, path_env: str | None = None) -> list[str] | None:
+    """``[node, main.js]`` for the Ix installer layout, or None if it is not that.
+
+    The layout is ``<dir>\\bin\\ix.cmd`` that runs ``"%~dp0..\\cli\\ix.cmd" %*``,
+    and ``<dir>\\cli\\ix.cmd`` with exactly one ``node "<script>" %*`` line whose
+    script exists. Starting node with that script directly is what the two
+    launchers end up doing, without cmd.exe parsing the arguments.
+    """
+    bin_dir = os.path.dirname(ix_cmd)
+    if os.path.basename(ix_cmd).lower() != "ix.cmd" or os.path.basename(bin_dir).lower() != "bin":
+        return None
+    cli_dir = os.path.join(os.path.dirname(bin_dir), "cli")
+    inner_path = os.path.join(cli_dir, "ix.cmd")
+    if not os.path.isfile(inner_path):
+        return None
+    outer = _batch_lines(ix_cmd)
+    if outer is None or not any(_OUTER_LAUNCH_RE.match(line) for line in outer):
+        return None
+    inner = _batch_lines(inner_path) or []
+    matches = [m for m in map(_INNER_LAUNCH_RE.match, inner) if m]
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    script = _expand_dp0(match.group("script"), cli_dir)
+    if script is None or not os.path.isabs(script) or not os.path.isfile(script):
+        return None
+    if match.group("quoted"):
+        node = _expand_dp0(match.group("quoted"), cli_dir)
+        if node is None or not os.path.isabs(node) or not os.path.isfile(node):
+            return None
+        if os.path.splitext(node)[1].lower() not in (".exe", ".com"):
+            return None
+    else:
+        node = find_on_path("node", path_env=path_env, extensions=(".exe", ".com"))
+        if node is None:
+            return None
+    return [node, script]
+
+
+def _resolve_ix_launcher(path_env: str | None = None) -> tuple[str, list[str]] | None:
+    """``("direct", argv prefix)`` or ``("batch", [ix.cmd])``; None when ix is absent."""
+    resolved = find_on_path("ix", path_env=path_env)
+    if resolved is None:
+        return None
+    if os.path.splitext(resolved)[1].lower() in (".exe", ".com"):
+        return "direct", [resolved]
+    node_command = installer_node_command(resolved, path_env=path_env)
+    if node_command is not None:
+        return "direct", node_command
+    return "batch", [resolved]
+
+
+def _ix_launcher() -> tuple[str, list[str]] | None:
+    """The launcher for ix, resolved once per process."""
+    global _ix_launcher_cache
+    if _ix_launcher_cache is _UNSET:
+        _ix_launcher_cache = _resolve_ix_launcher()
+    return _ix_launcher_cache  # type: ignore[return-value]
+
+
+def quote_batch_arg(arg: str) -> str:
+    """Quote one argument for a .cmd/.bat command line, at any cmd.exe depth.
+
+    Wrapped in double quotes with every inner `"` doubled, so each cmd.exe pass
+    sees one quoted region and no character in it is special. Backslashes
+    before a quote or the end are doubled for the C runtime that finally splits
+    the line. `%` becomes `%%cd:~,%`, which expands back to `%` instead of to a
+    variable. No carets: one pass would consume them and the next would not.
+    """
+    if "\r" in arg or "\n" in arg or "\0" in arg:
+        raise IxArgumentError(
+            "an ix argument contains a line break, which cmd.exe cannot pass intact; ix was not started"
+        )
+    out = ['"']
+    backslashes = 0
+    for ch in arg:
+        if ch == "\\":
+            backslashes += 1
+        else:
+            if ch == '"':
+                out.append("\\" * backslashes + '"')
+            elif ch == "%":
+                out.append("%%cd:~,")
+            backslashes = 0
+        out.append(ch)
+    out.append("\\" * backslashes + '"')
+    return "".join(out)
+
+
+def _system32(name: str) -> str:
+    root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+    return os.path.join(root, "System32", name)
+
+
+def batch_command_line(cmd_exe: str, script: str, args: list[str]) -> str:
+    """The verbatim CreateProcess command line that runs ``script args`` via cmd.exe."""
+    line = " ".join(quote_batch_arg(part) for part in [script, *args])
+    # /s strips exactly the outer quotes; /v:off so delayed expansion enabled in
+    # the registry cannot act on `!`; /d skips AutoRun; /e:on for `%cd:~,%`.
+    return f'"{cmd_exe}" /e:on /d /v:off /s /c "{line}"'
+
+
+def ix_process_args(
+    args: list[str],
+    launcher: tuple[str, list[str]] | None,
+    env: dict[str, str] | None = None,
+    cmd_exe: str | None = None,
+) -> WindowsLaunch:
+    """How to start ``ix <args>`` with ``launcher``; FileNotFoundError when there is none."""
+    if launcher is None:
+        raise FileNotFoundError("ix not found on PATH")
+    kind, prefix = launcher
+    if kind == "direct":
+        return WindowsLaunch([*prefix, *args], None, env)
+    cmd_exe = cmd_exe or _system32("cmd.exe")
+    command_line = batch_command_line(cmd_exe, prefix[0], list(args))
+    child_env = dict(os.environ if env is None else env)
+    # cmd.exe looks a bare name (the launcher's `node`) up in the current
+    # directory before PATH unless this is set; the cwd is the user's workspace.
+    child_env["NoDefaultCurrentDirectoryInExePath"] = "1"
+    return WindowsLaunch(command_line, cmd_exe, child_env)
+
+
+def windows_launch(argv: list[str], env: dict[str, str] | None = None) -> WindowsLaunch:
+    """What to hand subprocess on Windows for ``argv``: changed only when it is ix."""
+    if not argv or argv[0] != "ix":
+        return WindowsLaunch(list(argv), None, env)
+    return ix_process_args(list(argv[1:]), _ix_launcher(), env=env)
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    # Killing cmd.exe or node alone could leave a child holding the pipes open.
+    try:
+        subprocess.run(
+            [_system32("taskkill.exe"), "/F", "/T", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _run_windows(
+    launch: WindowsLaunch, cwd: str | Path | None, timeout: float
+) -> subprocess.CompletedProcess[str]:
+    # A string `args` is the verbatim command line for cmd.exe, and
+    # `executable` names cmd.exe by absolute path, so nothing is looked up.
+    proc = subprocess.Popen(
+        launch.args,
+        executable=launch.executable,
+        cwd=str(cwd) if cwd else None,
+        env=launch.env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc)
+        raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
 
 
 # ── Caching ──────────────────────────────────────────────────────────────────
@@ -1030,9 +1324,15 @@ def request_guarded_map(
     env = dict(os.environ)
     # Ix skips an automatic map against a remote backend when this is set.
     env["IX_AUTO_MAP"] = "1"
+    argv: list[str] | str = ["ix", "map", str(root), "--silent"]
+    executable = None
     try:
+        if os.name == "nt":
+            # The resolved launcher, as in run_command; POSIX keeps the bare argv.
+            argv, executable, env = windows_launch(argv, env)  # type: ignore[assignment]
         return subprocess.Popen(
-            ["ix", "map", str(root), "--silent"],
+            argv,
+            executable=executable,
             cwd=str(root),
             env=env,
             stdin=subprocess.DEVNULL,
