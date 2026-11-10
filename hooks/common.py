@@ -1008,6 +1008,10 @@ def request_guarded_map(
     is already mapped, and no automatic map was requested for that root inside
     the debounce window. The map itself is detached, so it never runs inside a
     hook timeout. Returns the child (tests wait on it) or None when skipped.
+
+    The debounce stamp is written before `ix status` is asked, so an unmapped
+    root or an unreachable backend costs one status call per window, not one
+    per edit.
     """
     if not ix_available():
         return None
@@ -1016,12 +1020,12 @@ def request_guarded_map(
         return None
     if _map_debounced(root):
         return None
-    if not workspace_mapped(root, deadline):
-        return None
     try:
         _mark_map_requested(root)
     except OSError as exc:
         log(f"[ix] map debounce stamp failed (non-fatal): {exc}")
+        return None
+    if not workspace_mapped(root, deadline):
         return None
     env = dict(os.environ)
     # Ix skips an automatic map against a remote backend when this is set.
