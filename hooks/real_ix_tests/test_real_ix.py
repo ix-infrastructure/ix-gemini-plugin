@@ -218,7 +218,7 @@ class RealIxTests(unittest.TestCase):
     def test_06_real_pro_stub_is_recognised(self) -> None:
         """The OSS release's `briefing` stub must read as 'not Pro', and be cached."""
         import common  # noqa: PLC0415
-        result = run(["ix", "briefing", "--format", "json"])
+        result = run(common.BRIEFING_ARGV)
         if result.returncode == 0:
             self.skipTest("this ix has Ix Pro installed")
         self.assertTrue(common._is_pro_stub_response(result), result.stdout + result.stderr)

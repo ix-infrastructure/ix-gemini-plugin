@@ -59,7 +59,7 @@ Reusable playbook docs in [`agents/`](./agents):
 | Trigger | Gemini hook | Effect |
 |---------|-------------|--------|
 | Session starts | `SessionStart` | Injects Ix operating guidance and graph-first rules into the model's context |
-| Before agent plans | `BeforeAgent` | Injects `ix briefing` once per 10 min if Ix Pro is available |
+| Before agent plans | `BeforeAgent` | Injects `ix briefing` (text, capped) once per 10 min if Ix Pro is available; an empty briefing injects nothing |
 | After shell search/read | `AfterTool` (`run_shell_command`) | Appends `ix text` + `ix locate` (for `grep`/`rg`) or `ix overview` + `ix impact` (for `cat`/`head`/...) context to the tool result the model reads |
 | After a file edit | `AfterTool` (`run_shell_command`, `write_file`, `replace`) | After a file-modifying shell command or a native edit, refreshes an already-mapped git repo in the background (`ix map <root> --silent`, at most once per 5 min per repo) |
 | Session ends | `SessionEnd` | Same guarded background refresh of the project's git root |

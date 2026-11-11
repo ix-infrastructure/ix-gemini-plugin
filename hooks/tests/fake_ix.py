@@ -23,6 +23,11 @@ the way Ix #853 does, on stdout: `ambiguous` exits 2 with candidates,
 `not_mapped` exits 4 (and also covers `inventory`), `error` exits 1 with a
 non-lookup error record and `garbage` exits 2 with non-JSON. With
 $FAKE_IX_LEGACY_EXIT=1 every one of them exits 1, as ix did before #853.
+
+`ix briefing` answers as Ix Pro does unless $FAKE_IX_BRIEFING says otherwise:
+`stub` is the OSS stub (exit 1, "requires Ix Pro"), `empty` is a briefing whose
+sections are all empty, `blank` prints nothing, and `long` has one very long
+section. Its text layout is illustrative, not copied from a Pro release.
 """
 from __future__ import annotations
 
@@ -52,7 +57,38 @@ _OPTIONS: dict[str, dict[str, bool]] = {
         "--depth": True, "--limit": True,
     },
     "smells": {**_COMMON},
+    "briefing": {**_COMMON},
 }
+
+_BRIEFING_SECTIONS = ("Goals", "Plans", "Decisions", "Bugs", "Recent changes")
+_BRIEFING_ITEMS = {
+    "Goals": ["Ship the session-token rewrite"],
+    "Decisions": ["Sessions live in Postgres, not Redis"],
+    "Recent changes": ["src/auth/session.py"],
+}
+
+
+def _briefing(opts: dict[str, str | bool]) -> None:
+    mode = os.environ.get("FAKE_IX_BRIEFING", "")
+    if mode == "stub":
+        _fail("The 'briefing' command requires Ix Pro.")
+    if mode == "blank":
+        return
+    items = {} if mode == "empty" else dict(_BRIEFING_ITEMS)
+    if mode == "long":
+        items["Bugs"] = [f"bug {n}: " + "x" * 60 for n in range(200)]
+    if opts.get("--format") == "json":
+        print(json.dumps({
+            "revision": 42,
+            **{name.split()[-1].lower(): [{"title": t} for t in items.get(name, [])]
+               for name in _BRIEFING_SECTIONS},
+        }, indent=2))
+        return
+    lines = ["Ix briefing (revision 42)", ""]
+    for name in _BRIEFING_SECTIONS:
+        lines.append(name)
+        lines.extend([f"  - {t}" for t in items.get(name, [])] or ["  (none)"])
+    print("\n".join(lines))
 
 
 _LOOKUP_COMMANDS = {"locate", "overview", "impact"}
@@ -166,6 +202,10 @@ def main(argv: list[str]) -> None:
             print(json.dumps({"backend": "ok", "graphCompleted": completed}))
         else:
             print("Ix Memory  ok")
+        return
+
+    if command == "briefing":
+        _briefing(opts)
         return
 
     if command == "map":
