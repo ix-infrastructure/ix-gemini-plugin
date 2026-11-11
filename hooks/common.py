@@ -42,6 +42,11 @@ HEALTH_TTL_SECONDS = 30
 # longer than the health check it used to borrow its TTL from.
 PRO_TTL_SECONDS = 3600
 BRIEFING_TTL_SECONDS = 600
+# The text form: it is what the model reads, and it is several times smaller
+# than the JSON document of the same briefing.
+BRIEFING_ARGV = ["ix", "briefing", "--format", "text"]
+# Longest briefing BeforeAgent adds to a prompt, in characters.
+BRIEFING_MAX_CHARS = 4000
 # At most one automatic map per workspace root per window. Ix itself holds a
 # per-workspace map lock, so this only stops a burst of edits from queueing a
 # burst of maps.
@@ -601,6 +606,18 @@ def _is_pro_stub_response(result: subprocess.CompletedProcess[str]) -> bool:
 
 
 def ix_pro_available(cwd: str | Path | None, deadline: Deadline | None = None) -> bool:
+    return ix_pro_briefing(cwd, deadline)[0]
+
+
+def ix_pro_briefing(
+    cwd: str | Path | None, deadline: Deadline | None = None
+) -> tuple[bool, str | None]:
+    """Whether Ix Pro is installed, plus the briefing text if this call ran it.
+
+    The probe is `ix briefing` itself, so when it runs and succeeds its output
+    is the briefing; BeforeAgent uses it instead of starting the CLI again. The
+    text is None when the answer came from the cache or Pro is not available.
+    """
     if PRO_CACHE_PATH.exists():
         try:
             cached = json.loads(PRO_CACHE_PATH.read_text())
@@ -610,7 +627,7 @@ def ix_pro_available(cwd: str | Path | None, deadline: Deadline | None = None) -
             timestamp = float(cached.get("timestamp", 0))
             ok = bool(cached.get("ok", False))
             if time.time() - timestamp < PRO_TTL_SECONDS:
-                return ok
+                return ok, None
     # Probe with the real command, not `--help`.
     #
     # Pro commands are always *registered*: without @ix/pro the CLI installs a
@@ -625,11 +642,11 @@ def ix_pro_available(cwd: str | Path | None, deadline: Deadline | None = None) -
     # the backend is already known reachable.
     timeout = _call_timeout(8, deadline)
     if timeout is None:
-        return False
-    result = run_command(["ix", "briefing", "--format", "json"], cwd=cwd, timeout=timeout)
+        return False, None
+    result = run_command(BRIEFING_ARGV, cwd=cwd, timeout=timeout)
     if result is None:
         # Could not run ix at all (timeout, OSError). Says nothing about Pro.
-        return False
+        return False, None
     ok = result.returncode == 0
     if not ok and not _is_pro_stub_response(result):
         # A non-zero exit that is NOT the Pro stub is a transient failure — a
@@ -637,9 +654,9 @@ def ix_pro_available(cwd: str | Path | None, deadline: Deadline | None = None) -
         # for this run is right, but caching it is not: PRO_TTL_SECONDS is an
         # hour, so one blip would suppress every Pro feature for a Pro user
         # until it expires. Leave the cache alone and re-probe next time.
-        return False
+        return False, None
     _write_cache(PRO_CACHE_PATH, {"timestamp": time.time(), "ok": ok})
-    return ok
+    return ok, (result.stdout or "") if ok else None
 
 
 def briefing_due(root: str | Path | None, ttl_seconds: int = BRIEFING_TTL_SECONDS) -> bool:
@@ -707,14 +724,60 @@ def run_ix_json(
     return parse_json_output(result.stdout)
 
 
-def run_ix_text(
-    argv: list[str], cwd: str | Path | None = None, timeout: float = 10
-) -> str | None:
-    result = run_command(argv, cwd=cwd, timeout=timeout)
+def fetch_briefing(cwd: str | Path | None, timeout: float) -> str | None:
+    """`ix briefing` output, "" when it printed nothing, None when it failed."""
+    result = run_command(BRIEFING_ARGV, cwd=cwd, timeout=timeout)
     if not result or result.returncode != 0:
         return None
-    fragment = extract_json_fragment(result.stdout)
-    return fragment or result.stdout.strip() or None
+    return result.stdout or ""
+
+
+# ── Session briefing ─────────────────────────────────────────────────────────
+#
+# A briefing is worth injecting only if one of its sections (goals, plans,
+# decisions, bugs, changes) has something in it. The check reads the text form,
+# and when it cannot tell, it injects: a line it does not recognise as a
+# section heading or a "none" placeholder counts as content.
+
+_BRIEFING_SECTION = r"(?:goals?|plans?|decisions?|bugs?|(?:recent\s+)?changes?)"
+_BRIEFING_NONE = r"(?:\(?\s*(?:none|nothing|n/a|empty|-|—)\s*\)?|0)"
+_BRIEFING_EMPTY_LINE_RES = (
+    # A placeholder on its own line: "(none)", "- none", "_none_", "—".
+    re.compile(rf"^[-*•_\s]*{_BRIEFING_NONE}[_.\s]*$", re.IGNORECASE),
+    # "No recent changes.", "No decisions recorded"
+    re.compile(rf"^no\b.*\b{_BRIEFING_SECTION}\b[^:]*$", re.IGNORECASE),
+)
+# An unindented, unbulleted heading: "Goals", "## Open bugs: 0", "Plans (2)",
+# "Active plans: none", or the title, "Ix briefing (revision 7)".
+_BRIEFING_HEADING_RE = re.compile(
+    r"^#*\s*(?:"
+    rf"(?:(?:open|active|recent|pending|current|known|latest|new)\s+)?{_BRIEFING_SECTION}"
+    rf"\s*(?:\(\d+\))?\s*(?::\s*(?:{_BRIEFING_NONE})?)?"
+    r"|(?:ix\s+|session\s+)*briefing\b[^:]{0,60}:?"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+
+def _briefing_line_is_empty(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if any(regex.match(stripped) for regex in _BRIEFING_EMPTY_LINE_RES):
+        return True
+    return line[:1] not in (" ", "\t", "-", "*", "•") and bool(_BRIEFING_HEADING_RE.match(stripped))
+
+
+def format_briefing(text: str | None) -> str | None:
+    """The briefing to inject, capped at BRIEFING_MAX_CHARS; None if it is empty."""
+    if not text or all(_briefing_line_is_empty(line) for line in text.splitlines()):
+        return None
+    text = text.strip()
+    if len(text) <= BRIEFING_MAX_CHARS:
+        return text
+    cut = text.rfind("\n", 0, BRIEFING_MAX_CHARS + 1)
+    body = text[: cut if cut > 0 else BRIEFING_MAX_CHARS].rstrip()
+    return f"{body}\n[ix] Briefing truncated; run `ix briefing` for the rest."
 
 
 # ── Graph lookups ────────────────────────────────────────────────────────────

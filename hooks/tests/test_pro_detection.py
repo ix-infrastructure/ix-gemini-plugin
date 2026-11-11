@@ -41,7 +41,7 @@ def _load_common(cache_dir: Path):
 
 def _completed(returncode: int, stdout: str = "", stderr: str = ""):
     return subprocess.CompletedProcess(
-        args=["ix", "briefing", "--format", "json"],
+        args=["ix", "briefing", "--format", "text"],
         returncode=returncode,
         stdout=stdout,
         stderr=stderr,
@@ -64,12 +64,25 @@ class ProDetectionTest(unittest.TestCase):
 
         def record(argv, **_kwargs):
             seen.append(argv)
-            return _completed(0, stdout='{"revision": 42}')
+            return _completed(0, stdout="Goals\n  - ship it\n")
 
         with patch.object(self.common, "run_command", side_effect=record):
             self.common.ix_pro_available(None)
 
-        self.assertEqual([["ix", "briefing", "--format", "json"]], seen)
+        self.assertEqual([["ix", "briefing", "--format", "text"]], seen)
+
+    def test_probe_hands_back_the_briefing_it_ran(self) -> None:
+        briefing = "Goals\n  - ship it\n"
+        with patch.object(self.common, "run_command", return_value=_completed(0, stdout=briefing)):
+            self.assertEqual((True, briefing), self.common.ix_pro_briefing(None))
+        # Answered from the cache: nothing was run, so there is no briefing.
+        with patch.object(self.common, "run_command", side_effect=AssertionError("ran ix")):
+            self.assertEqual((True, None), self.common.ix_pro_briefing(None))
+
+    def test_stub_hands_back_no_briefing(self) -> None:
+        stub = _completed(1, stderr="The 'briefing' command requires Ix Pro.\n")
+        with patch.object(self.common, "run_command", return_value=stub):
+            self.assertEqual((False, None), self.common.ix_pro_briefing(None))
 
     def test_real_briefing_caches_pro_available(self) -> None:
         self.assertTrue(self._run_probe(_completed(0, stdout='{"revision": 42}')))

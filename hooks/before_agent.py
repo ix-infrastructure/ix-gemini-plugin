@@ -9,12 +9,13 @@ from common import (
     Deadline,
     briefing_due,
     emit_model_context,
+    fetch_briefing,
     find_workspace_root,
+    format_briefing,
     ix_healthy,
-    ix_pro_available,
+    ix_pro_briefing,
     mark_briefing_sent,
     read_event,
-    run_ix_text,
 )
 
 
@@ -29,19 +30,25 @@ def main() -> None:
         return
     if not ix_healthy(workspace_root, deadline):
         return
-    if not ix_pro_available(workspace_root, deadline):
+    # The Pro check runs `ix briefing` itself unless its answer is cached; when
+    # it does, its output is this turn's briefing.
+    pro, briefing = ix_pro_briefing(workspace_root, deadline)
+    if not pro:
         return
+    if briefing is None:
+        timeout = deadline.timeout(8)
+        if timeout is None:
+            return
+        briefing = fetch_briefing(workspace_root, timeout)
+        if briefing is None:
+            return
 
-    timeout = deadline.timeout(8)
-    if timeout is None:
-        return
-    briefing = run_ix_text(
-        ["ix", "briefing", "--format", "json"], cwd=workspace_root, timeout=timeout
-    )
+    # ix answered, so the window starts even when the briefing is empty:
+    # otherwise every prompt would start the CLI again to learn the same thing.
+    mark_briefing_sent(workspace_root)
+    briefing = format_briefing(briefing)
     if not briefing:
         return
-
-    mark_briefing_sent(workspace_root)
     # Gemini appends this to the user's prompt for this turn (core/client.ts).
     emit_model_context("BeforeAgent", f"[ix] Session briefing:\n{briefing}")
 

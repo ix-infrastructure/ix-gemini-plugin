@@ -124,7 +124,7 @@ The `agents/` directory carries reusable playbook docs:
 
 The Gemini CLI extension uses these hook events:
 - `SessionStart` injects Ix operating guidance
-- `BeforeAgent` injects the Ix Pro briefing once per 10 minutes
+- `BeforeAgent` injects the Ix Pro briefing (text, capped) once per 10 minutes, and nothing when every section is empty
 - `AfterTool` for `run_shell_command` appends Ix context to the result of `grep`/`rg` and read-style shell commands. When a lookup is ambiguous it lists ix's candidates with their `--pick` numbers; when a symbol is not found it lists ix's suggestions; in an unmapped workspace it says so at most once every 30 minutes
 - `AfterTool` for `run_shell_command`, `write_file` and `replace` requests a guarded background `ix map <git root> --silent` after a file edit (only for an already-mapped repo, at most once per 5 minutes per repo)
 
