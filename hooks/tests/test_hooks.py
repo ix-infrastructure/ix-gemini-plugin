@@ -106,7 +106,8 @@ class RegisteredHooksTest(unittest.TestCase):
         for definitions in config.values():
             for definition in definitions:
                 for hook in definition["hooks"]:
-                    scripts.append(hook["command"].rsplit("/", 1)[-1])
+                    # `python3 "${extensionPath}/hooks/<name>.py"`
+                    scripts.append(hook["command"].rsplit("/", 1)[-1].rstrip('"'))
         return scripts
 
     def test_registered_scripts_exist(self) -> None:

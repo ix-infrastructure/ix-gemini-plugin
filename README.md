@@ -9,8 +9,15 @@ Gemini + Ix = reasoning engine + persistent code knowledge graph. Skills are cog
 ## Requirements
 
 - [Ix Memory](https://github.com/ix-infrastructure/Ix) CLI >= 0.11.0 installed and running (`ix status` returns ok)
-- `python3` in PATH for hook scripts
+- `python3` in PATH for hook scripts (on Windows, see below)
 - `ripgrep` (`rg`) is recommended
+
+### Windows
+
+- Install Ix with its Windows installer, which puts `ix.cmd` on PATH. The hooks look `ix` up through PATH and PATHEXT, never in the current directory; if it is not there they treat Ix as not installed. For the installer's layout they start the CLI's script with the `node` on PATH directly, as its launcher would, with no `cmd.exe` in between. If either launcher does anything else before node runs (for example sets `NODE_OPTIONS`), they run it through `cmd.exe` instead, as written. For any other `ix.cmd` they go through `cmd.exe` with quoting that keeps every argument intact, and with `NoDefaultCurrentDirectoryInExePath=1` so the launcher's `node` is not taken from your workspace. An argument containing a line break is refused rather than passed.
+- Python 3 must be on PATH. The python.org installer provides `python` and `py`, not `python3`.
+  - `install.ps1` tries `python3`, `python` and `py -3` in that order and writes the first one that runs Python 3 into the installed `hooks.json`.
+  - With `gemini extensions install`, `hooks.json` is used as shipped, so `python3` must exist (for example the Microsoft Store Python, or a `python3` of your own on PATH), or run `install.ps1` instead. `hooks.json` has one command per hook, shared by every platform, so the shipped file cannot name `python3` on macOS and Linux and `py` on Windows. The way around that would be to start every hook through one program that exists on every platform, such as a small `node` script (Gemini CLI itself runs on Node.js) that finds Python and runs the hook. The extension does not do that yet, so for now use one of the two options above.
 
 Ix Pro is optional. If present, the `BeforeAgent` hook injects the Ix session briefing once per 10 minutes.
 

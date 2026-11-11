@@ -200,8 +200,16 @@ def main(argv: list[str]) -> None:
 
 
 def install(bin_dir: Path) -> Path:
-    """Write an executable `ix` into bin_dir that runs this fake."""
+    """Write an executable `ix` into bin_dir that runs this fake.
+
+    On Windows it is an `ix.cmd`, the kind of launcher the Ix installer puts on
+    PATH, so the hooks start it the way they start the real one.
+    """
     bin_dir.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        script = bin_dir / "ix.cmd"
+        script.write_text(f'@"{sys.executable}" "{Path(__file__).resolve()}" %*\n')
+        return script
     script = bin_dir / "ix"
     script.write_text(
         f"#!{sys.executable}\n"
@@ -227,6 +235,8 @@ def isolated_env(tmp: Path) -> dict[str, str]:
     env.update({
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         "HOME": str(home),
+        # Path.home() on Windows.
+        "USERPROFILE": str(home),
         "XDG_STATE_HOME": str(tmp / "state"),
         "FAKE_IX_LOG": str(tmp / "ix-calls.jsonl"),
         "GIT_CONFIG_NOSYSTEM": "1",
