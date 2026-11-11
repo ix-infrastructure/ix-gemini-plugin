@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -40,11 +41,25 @@ EXPECTED_SERVER = {
 }
 
 
+def _repo_files(pattern: str) -> list[Path]:
+    """Tracked files matching the pattern, so a local venv or build is ignored."""
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z", "--", pattern], cwd=REPO,
+            capture_output=True, check=True, timeout=30,
+        ).stdout.decode().split("\0")
+        return sorted(REPO / name for name in listed if name and (REPO / name).exists())
+    except (OSError, subprocess.SubprocessError):
+        return sorted(
+            path for path in REPO.rglob(pattern)
+            if ".git" not in path.relative_to(REPO).parts
+        )
+
+
 def _doc_files() -> list[Path]:
-    files = [REPO / "GEMINI.md", REPO / "README.md"]
-    files += sorted((REPO / "skills").glob("*/SKILL.md"))
-    files += sorted((REPO / "agents").glob("*.md"))
-    return files
+    # Every Markdown file, so a design document that outlives its design (as
+    # PLUGIN_SPEC.md, ROADMAP.md and docs/VALIDATION.md did) fails here too.
+    return _repo_files("*.md")
 
 
 class ManifestTest(unittest.TestCase):
@@ -73,6 +88,21 @@ class ManifestTest(unittest.TestCase):
                 if name not in known:
                     unknown.append(f"{path.relative_to(REPO)}: {name}")
         self.assertEqual([], unknown)
+
+    def test_docs_name_only_scripts_that_exist(self) -> None:
+        # The removed BeforeTool hook and bundled server must not be described
+        # as if they were part of the extension.
+        scripts = {path.name for path in _repo_files("*.py")}
+        stale: list[str] = []
+        for path in _doc_files():
+            text = path.read_text()
+            for name in sorted(set(re.findall(r"\b([a-z_]+\.py)\b", text))):
+                if name not in scripts:
+                    stale.append(f"{path.relative_to(REPO)}: {name}")
+            for removed in ("dist/server.js", "`mcp/`"):
+                if removed in text:
+                    stale.append(f"{path.relative_to(REPO)}: {removed}")
+        self.assertEqual([], stale)
 
 
 if __name__ == "__main__":

@@ -64,6 +64,16 @@ Reusable playbook docs in [`agents/`](./agents):
 | After a file edit | `AfterTool` (`run_shell_command`, `write_file`, `replace`) | After a file-modifying shell command or a native edit, refreshes an already-mapped git repo in the background (`ix map <root> --silent`, at most once per 5 min per repo) |
 | Session ends | `SessionEnd` | Same guarded background refresh of the project's git root |
 
+## How It Works
+
+- `gemini-extension.json` holds the extension's metadata and its one MCP server (see above). Gemini does not read hooks or skills from it.
+- `hooks/hooks.json` maps each hook event above to a Python script in `hooks/`. `AfterTool` is matched by tool name; Gemini's shell tool is `run_shell_command`. Each script reads the event as JSON on stdin and runs `ix` within a time budget below its `timeout` in `hooks.json`, because Gemini drops the output of a hook that runs over. The shared helpers are in `hooks/common.py`.
+- Context reaches the model only as `hookSpecificOutput.additionalContext`. `systemMessage` is shown to the user only, so there is no `BeforeTool` hook: it could reach the model only by blocking the tool.
+- Hooks write diagnostics to stderr, never to stdout and never to a log file. `AfterTool` and `SessionEnd` catch any exception, log it and still exit 0.
+- Gemini discovers skills from `skills/<name>/SKILL.md`. `agents/` holds playbook documents, and `GEMINI.md` is the operating guide. The installers copy all three, with the manifest and hooks, into the extension directory.
+
+The tests (see Local Validation) do not start Gemini CLI. With a real `gemini` and `ix`, check by hand that `gemini extensions install .` succeeds, the `ix-memory` tools appear and answer for the opened project, each hook fires without error (and without crashing Gemini when `ix` is missing), and the skills appear in `/skills list`.
+
 ## Install
 
 ### Quick install
