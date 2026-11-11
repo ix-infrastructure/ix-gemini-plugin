@@ -23,6 +23,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+import unittest.mock
 from unittest.mock import patch
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -292,6 +293,60 @@ class InstallerLayoutTest(unittest.TestCase):
                 finally:
                     path.write_bytes(original)
 
+    def test_inert_lines_around_the_launch_lines_keep_the_node_route(self) -> None:
+        main_js = "%~dp0cli\\dist\\cli\\main.js"
+        cases = {
+            "inner with setlocal, comments and exit": (
+                self.inner,
+                f'@echo off\r\nrem Ix CLI\r\n:: launcher\r\nsetlocal\r\n\r\n'
+                f'node "{main_js}" %*\r\nendlocal\r\nexit /b %errorlevel%\r\n',
+            ),
+            "outer with setlocal and a comment": (
+                self.outer, "@setlocal\nrem Ix\n" + INSTALLER_BIN_IX_CMD,
+            ),
+        }
+        for name, (path, text) in cases.items():
+            with self.subTest(name):
+                original = path.read_bytes()
+                path.write_text(text)
+                try:
+                    self.assertEqual([str(self.node), str(self.main_js)], self.detect())
+                finally:
+                    path.write_bytes(original)
+
+    def test_a_launcher_line_that_could_change_how_node_runs_falls_back_to_cmd(self) -> None:
+        main_js = "%~dp0cli\\dist\\cli\\main.js"
+        node_line = f'node "{main_js}" %*\n'
+        inner_cases = {
+            "set NODE_OPTIONS": f"@echo off\nset NODE_OPTIONS=--max-old-space-size=8192\n{node_line}",
+            "setlocal with options": f"@echo off\nsetlocal enabledelayedexpansion\n{node_line}",
+            "call a setup script": f'@echo off\ncall "%~dp0env.cmd"\n{node_line}',
+            "set after the node line": f"@echo off\n{node_line}set X=1\n",
+            "exit before the node line": f"@echo off\nexit /b 1\n{node_line}",
+            "a comment that runs a command": f"@echo off\nrem x & set X=1\n{node_line}",
+            "a label before the node line": f"@echo off\n:start\n{node_line}",
+        }
+        outer_launch = '"%~dp0..\\cli\\ix.cmd" %*\n'
+        outer_cases = {
+            "outer sets a variable first": INSTALLER_BIN_IX_CMD.replace(
+                outer_launch, "set NODE_OPTIONS=--inspect\n" + outer_launch
+            ),
+            "outer runs something after the launch": INSTALLER_BIN_IX_CMD.replace(
+                outer_launch, outer_launch + 'call "%~dp0after.cmd"\n'
+            ),
+        }
+        cases = [(self.inner, name, text) for name, text in inner_cases.items()]
+        cases += [(self.outer, name, text) for name, text in outer_cases.items()]
+        for path, name, text in cases:
+            with self.subTest(name):
+                self.assertNotEqual(text, path.read_text())
+                original = path.read_bytes()
+                path.write_text(text)
+                try:
+                    self.assertIsNone(self.detect())
+                finally:
+                    path.write_bytes(original)
+
     def test_missing_inner_launcher_falls_back_to_cmd(self) -> None:
         self.inner.unlink()
         self.assertIsNone(self.detect())
@@ -304,6 +359,43 @@ class InstallerLayoutTest(unittest.TestCase):
         other.parent.mkdir()
         other.write_bytes(self.outer.read_bytes())
         self.assertIsNone(self.detect(other))
+
+
+class TimeoutAndDetachTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.common = _load_common()
+
+    def test_killing_the_tree_is_bounded_and_always_kills_the_parent(self) -> None:
+        proc = unittest.mock.Mock(pid=1234)
+        for outcome in (None, subprocess.TimeoutExpired("taskkill", 1.0)):
+            with self.subTest(outcome=outcome):
+                proc.reset_mock()
+                with patch.object(self.common.subprocess, "run", side_effect=outcome) as run:
+                    self.common._kill_process_tree(proc)
+                argv = run.call_args.args[0]
+                self.assertEqual(["/F", "/T", "/PID", "1234"], argv[1:])
+                self.assertEqual(self.common.KILL_TREE_SECONDS, run.call_args.kwargs["timeout"])
+                proc.kill.assert_called_once_with()
+
+    def test_budget_plus_kill_time_fits_inside_each_gemini_timeout(self) -> None:
+        config = json.loads((HOOKS_DIR / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+        self.assertEqual(set(self.common.HOOK_BUDGET_SECONDS), set(config))
+        for event, definitions in config.items():
+            for definition in definitions:
+                for hook in definition["hooks"]:
+                    with self.subTest(event):
+                        budget = self.common.HOOK_BUDGET_SECONDS[event] + self.common.KILL_TREE_SECONDS
+                        # At least a second left for Python to start and exit.
+                        self.assertLessEqual(budget + 1.0, hook["timeout"] / 1000)
+
+    def test_detached_child_options(self) -> None:
+        self.assertEqual({"start_new_session": True}, self.common.detached_popen_kwargs(False))
+        flags = self.common.detached_popen_kwargs(True)["creationflags"]
+        # CREATE_NEW_PROCESS_GROUP and CREATE_NO_WINDOW, never DETACHED_PROCESS.
+        self.assertEqual(0x00000200 | 0x08000000, flags)
+        self.assertFalse(flags & 0x00000008)
+        if WINDOWS:
+            self.assertEqual(subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW, flags)
 
 
 @unittest.skipIf(WINDOWS, "POSIX behaviour")

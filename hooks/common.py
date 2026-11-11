@@ -60,6 +60,10 @@ HOOK_BUDGET_SECONDS = {
 }
 # Not worth starting an ix call with less than this left.
 MIN_CALL_SECONDS = 0.5
+# Longest a timed-out ix call on Windows may spend having its process tree
+# killed. It is spent after the budget, so every hook's budget plus this stays
+# under the timeout hooks.json gives Gemini (test_windows_launch checks this).
+KILL_TREE_SECONDS = 1.0
 
 SHELL_OPERATORS = ("|", "&&", "||", ";", "$(", "`")
 SEARCH_COMMANDS = {"grep", "rg"}
@@ -267,6 +271,46 @@ _INNER_LAUNCH_RE = re.compile(
     r'^@?\s*(?:"(?P<quoted>[^"]+)"|(?P<bare>node(?:\.exe)?))\s+"(?P<script>[^"]+)"\s+%\*\s*$',
     re.IGNORECASE,
 )
+# The other lines a launcher may have and still be skipped by starting node
+# directly: blank, `@echo off`, a plain comment, and `setlocal`/`endlocal` with
+# nothing set. After the launch line, `exit /b [%errorlevel%|<n>]` too. Anything
+# else (`set`, `call`, NODE_OPTIONS, ...) could change how node runs, so such a
+# launcher goes through cmd.exe instead, which runs it as written.
+_INERT_LINE_RE = re.compile(
+    r"^(?:|@?\s*echo\s+off|@?\s*rem(?:\s[^&|<>^%!]*)?|::[^&|<>^%!]*"
+    r"|@?\s*(?:setlocal|endlocal))\s*$",
+    re.IGNORECASE,
+)
+_EXIT_LINE_RE = re.compile(r"^@?\s*exit\s+/b(?:\s+(?:%errorlevel%|\d+))?\s*$", re.IGNORECASE)
+# The installer's guard before its launch line in `bin\ix.cmd`.
+_OUTER_GUARD_RE = re.compile(
+    r'^@?\s*if\s+not\s+exist\s+"%~dp0\.\.\\cli\\ix\.cmd"\s+goto\s+:?ix_missing\s*$',
+    re.IGNORECASE,
+)
+
+
+def _launcher_is_plain(
+    lines: list[str], launch_re: re.Pattern[str], extra: tuple[re.Pattern[str], ...] = ()
+) -> bool:
+    """True when exactly one line matches ``launch_re`` and nothing else runs before it ends.
+
+    Lines are allowed before the launch line only when inert (or in ``extra``).
+    After it, inert lines up to an ``exit /b``; once that exit is reached, the
+    rest of the file is only reachable through a label (the installer's
+    ``:ix_missing`` block), so it does not affect a normal run.
+    """
+    launches = 0
+    exited = False
+    for line in lines:
+        if exited:
+            continue
+        if launch_re.match(line):
+            launches += 1
+        elif launches and _EXIT_LINE_RE.match(line):
+            exited = True
+        elif not (_INERT_LINE_RE.match(line) or any(r.match(line) for r in extra)):
+            return False
+    return launches == 1
 
 
 def find_on_path(
@@ -321,8 +365,10 @@ def installer_node_command(ix_cmd: str, path_env: str | None = None) -> list[str
 
     The layout is ``<dir>\\bin\\ix.cmd`` that runs ``"%~dp0..\\cli\\ix.cmd" %*``,
     and ``<dir>\\cli\\ix.cmd`` with exactly one ``node "<script>" %*`` line whose
-    script exists. Starting node with that script directly is what the two
-    launchers end up doing, without cmd.exe parsing the arguments.
+    script exists. Neither may have a line that could change how node runs
+    (see ``_launcher_is_plain``); such a launcher goes through cmd.exe. Starting
+    node with that script directly is what the two launchers end up doing,
+    without cmd.exe parsing the arguments.
     """
     bin_dir = os.path.dirname(ix_cmd)
     if os.path.basename(ix_cmd).lower() != "ix.cmd" or os.path.basename(bin_dir).lower() != "bin":
@@ -332,13 +378,12 @@ def installer_node_command(ix_cmd: str, path_env: str | None = None) -> list[str
     if not os.path.isfile(inner_path):
         return None
     outer = _batch_lines(ix_cmd)
-    if outer is None or not any(_OUTER_LAUNCH_RE.match(line) for line in outer):
+    if outer is None or not _launcher_is_plain(outer, _OUTER_LAUNCH_RE, (_OUTER_GUARD_RE,)):
         return None
     inner = _batch_lines(inner_path) or []
-    matches = [m for m in map(_INNER_LAUNCH_RE.match, inner) if m]
-    if len(matches) != 1:
+    if not _launcher_is_plain(inner, _INNER_LAUNCH_RE):
         return None
-    match = matches[0]
+    match = next(m for m in map(_INNER_LAUNCH_RE.match, inner) if m)
     script = _expand_dp0(match.group("script"), cli_dir)
     if script is None or not os.path.isabs(script) or not os.path.isfile(script):
         return None
@@ -448,10 +493,13 @@ def windows_launch(argv: list[str], env: dict[str, str] | None = None) -> Window
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
     # Killing cmd.exe or node alone could leave a child holding the pipes open.
+    # taskkill /T must run first: it finds the children through the live parent.
+    # Bounded by KILL_TREE_SECONDS, then the parent is killed regardless.
     try:
         subprocess.run(
             [_system32("taskkill.exe"), "/F", "/T", "/PID", str(proc.pid)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=KILL_TREE_SECONDS, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         pass
@@ -1293,6 +1341,26 @@ def workspace_mapped(root: Path, deadline: Deadline | None = None) -> bool:
     return isinstance(payload, dict) and payload.get("graphCompleted") is True
 
 
+# Windows process creation flags (subprocess only defines them on Windows).
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_NO_WINDOW = 0x08000000
+
+
+def detached_popen_kwargs(windows: bool) -> dict[str, object]:
+    """Popen options that detach a child from the hook's session or console.
+
+    POSIX: a new session, so the terminal's signals and the hook's process
+    group do not reach it. Windows ignores ``start_new_session``; there the
+    child gets its own process group, so Ctrl+C/Ctrl+Break in Gemini's console
+    is not delivered to it, and its own hidden console, so it does not share
+    Gemini's console. A hidden console rather than DETACHED_PROCESS, because
+    under a detached cmd.exe the console-mode node would open a visible window.
+    """
+    if windows:
+        return {"creationflags": CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW}
+    return {"start_new_session": True}
+
+
 def request_guarded_map(
     project_dir: str | Path | None, deadline: Deadline | None = None
 ) -> subprocess.Popen | None:
@@ -1326,8 +1394,9 @@ def request_guarded_map(
     env["IX_AUTO_MAP"] = "1"
     argv: list[str] | str = ["ix", "map", str(root), "--silent"]
     executable = None
+    windows = os.name == "nt"
     try:
-        if os.name == "nt":
+        if windows:
             # The resolved launcher, as in run_command; POSIX keeps the bare argv.
             argv, executable, env = windows_launch(argv, env)  # type: ignore[assignment]
         return subprocess.Popen(
@@ -1338,7 +1407,7 @@ def request_guarded_map(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            **detached_popen_kwargs(windows),
         )
     except Exception as exc:
         log(f"[ix] guarded ix map failed to start (non-fatal): {exc}")
