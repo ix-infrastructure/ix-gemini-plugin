@@ -34,7 +34,6 @@ CACHE_DIR = _state_dir()
 # Whether @ix/pro is installed is a property of the user's ix install, not of a
 # project, so this one cache is per-user only.
 PRO_CACHE_PATH = CACHE_DIR / "ix-pro.json"
-ERROR_STORE = Path.home() / ".local" / "share" / "ix" / "plugin" / "errors"
 
 HEALTH_TTL_SECONDS = 30
 # Whether @ix/pro is installed changes only when someone installs or removes it,
@@ -86,12 +85,6 @@ READ_SKIP_BASENAMES = {
     "cargo.lock", "go.sum", "package-lock.json",
     "pnpm-lock.yaml", "yarn.lock",
 }
-
-# Patterns emitted by the ix CLI when a Pro command is invoked without Pro installed.
-_PRO_FEATURE_RE = re.compile(
-    r"requires Ix Pro|Install @ix/pro|is a Ix/pro feature|premium features",
-    re.IGNORECASE,
-)
 
 
 # ── IO helpers ───────────────────────────────────────────────────────────────
@@ -875,65 +868,6 @@ def _summarize_read_ambiguity(
     )
 
 
-# ── Error capture ────────────────────────────────────────────────────────────
-
-def _is_pro_feature_message(message: str, stderr: str | None = None) -> bool:
-    combined = f"{message} {stderr or ''}"
-    return bool(_PRO_FEATURE_RE.search(combined))
-
-
-def _redact(s: str) -> str:
-    s = re.sub(r"[Bb]earer [A-Za-z0-9._~+/=-]{20,}", "Bearer [REDACTED]", s)
-    s = re.sub(r"ghp_[A-Za-z0-9]{36,}", "[REDACTED]", s)
-    s = re.sub(r"sk-[A-Za-z0-9-]{32,}", "[REDACTED]", s)
-    s = re.sub(r"[Aa][Pp][Ii][-_][Kk]ey=[^ &\"']*", "API_KEY=[REDACTED]", s)
-    s = re.sub(r"[Tt]oken=[^ &\"']*", "TOKEN=[REDACTED]", s)
-    s = s.replace(str(Path.home()), "~")
-    return s
-
-
-def _fingerprint(type_: str, component: str, message: str) -> str:
-    norm = f"{type_}|{component}|{message}".lower()
-    norm = re.sub(r"\d+", "N", norm)
-    norm = re.sub(r"/[^/ ]*", "", norm)
-    return hashlib.md5(norm[:120].encode()).hexdigest()
-
-
-def capture_error_async(
-    type_: str,
-    component: str,
-    message: str,
-    exit_code: int,
-    command: str = "",
-    stderr: str = "",
-) -> None:
-    """Log an error locally. Skips Pro feature messages."""
-    if _is_pro_feature_message(message, stderr):
-        return
-    try:
-        clean_msg = _redact(message)[:150]
-        clean_stderr = _redact("\n".join(stderr.split("\n")[:5]))[:300] if stderr else ""
-        clean_cmd = _redact(command) if command else ""
-        fp = _fingerprint(type_, component, clean_msg)
-
-        ERROR_STORE.mkdir(parents=True, exist_ok=True)
-        entry = json.dumps({
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "fp": fp,
-            "type": type_,
-            "component": component,
-            "message": clean_msg,
-            "command": clean_cmd,
-            "exit_code": exit_code,
-            "stderr": clean_stderr,
-        })
-        log_file = ERROR_STORE / "errors.jsonl"
-        with open(log_file, "a") as f:
-            f.write(entry + "\n")
-    except Exception:
-        pass
-
-
 # ── Pattern detection ────────────────────────────────────────────────────────
 
 def looks_plain_pattern(pattern: str) -> bool:
@@ -1153,21 +1087,16 @@ def _run_parallel(calls, cwd, deadline, runner, skipped):
     return results
 
 
-def run_parallel_json(
-    calls: list[tuple[str, list[str], int]],
-    cwd: str | Path | None,
-    deadline: Deadline | None = None,
-) -> dict[str, dict | list | None]:
-    """Run the calls at once; each is cut off at its own cap or the deadline."""
-    return _run_parallel(calls, cwd, deadline, run_ix_json, None)
-
-
 def run_parallel_lookup(
     calls: list[tuple[str, list[str], int]],
     cwd: str | Path | None,
     deadline: Deadline | None = None,
 ) -> dict[str, tuple[str, dict | list | None]]:
-    """``run_parallel_json`` with each answer as ``run_ix_lookup`` reads it."""
+    """Run the calls at once, each answer as ``run_ix_lookup`` reads it.
+
+    Each call is cut off at its own cap or the deadline; a call the deadline
+    leaves no time for is not run and answers ``LOOKUP_ERROR``.
+    """
     return _run_parallel(calls, cwd, deadline, run_ix_lookup, (LOOKUP_ERROR, None))
 
 

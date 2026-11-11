@@ -15,7 +15,7 @@ python3 -m unittest discover -s "$SCRIPT_DIR/hooks/tests" -p 'test_*.py'
 
 if command -v gemini >/dev/null 2>&1; then
   echo "==> Gemini CLI detected"
-  echo "Live Gemini validation remains manual: run the roadmap checks for hooks, GEMINI.md injection, and golden cases."
+  echo "Live Gemini validation remains manual: see "How It Works" in README.md for the checks."
 else
   echo "==> Gemini CLI not installed"
   echo "Skipping live Gemini validation (hooks, GEMINI.md injection, golden cases)."
