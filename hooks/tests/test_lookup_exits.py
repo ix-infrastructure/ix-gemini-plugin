@@ -3,7 +3,7 @@
 
 """Graph lookups that exit 2, 3 or 4 (Ix #853) are answers, not failures.
 
-`ix locate` (search hook) and `ix overview`/`ix impact` (read hook) print why
+`ix locate` (search hook) and `ix overview` (read hook) print why
 they could not resolve a target on stdout: the candidates (exit 2), the
 suggestions (exit 3) or that the workspace is not mapped (exit 4). An older ix
 prints the same records on exit 1. A real error, a timeout or non-JSON stdout
@@ -27,11 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fake_ix  # noqa: E402
 
 PATTERN = "verify_token"
-# What the search hook says today when `ix locate` adds nothing.
-TEXT_ONLY_SEARCH = (
-    f"[ix] shell grep intercepted for '{PATTERN}' | 1 text hits in fake.py"
-    f" | Prefer: ix text '{PATTERN}' or ix locate '{PATTERN}' over shell grep"
-)
 
 
 def _load_common():
@@ -119,7 +114,7 @@ class SearchMessageTest(_LookupCase):
                 self.assertIn(f"[2] {PATTERN} (method, lib/{PATTERN}:40)", message)
                 self.assertIn(f"ix locate '{PATTERN}' --pick <n>", message)
                 self.assertIn("--path", message)
-                self.assertIn("1 text hits in fake.py", message)
+                self.assertNotIn("text hits", message)
 
     def test_not_found_shows_suggestions(self) -> None:
         for legacy in (False, True):
@@ -134,7 +129,7 @@ class SearchMessageTest(_LookupCase):
     def test_not_found_without_suggestions_adds_nothing(self) -> None:
         self.lookup("not_found")
         os.environ["FAKE_IX_SUGGESTIONS"] = "0"
-        self.assertEqual(TEXT_ONLY_SEARCH, self.search())
+        self.assertIsNone(self.search())
 
     def test_not_mapped_line_once_per_workspace_window(self) -> None:
         self.lookup("not_mapped")
@@ -143,7 +138,7 @@ class SearchMessageTest(_LookupCase):
         self.assertIn(self.common.NOT_MAPPED_LINE, first)
         self.assertNotIn("error", first.lower())
         # Shown once per workspace per window, shared with the read hook.
-        self.assertEqual(TEXT_ONLY_SEARCH, self.search())
+        self.assertIsNone(self.search())
         self.assertIsNone(self.read())
 
     def test_old_ix_not_mapped_on_exit_1(self) -> None:
@@ -155,7 +150,7 @@ class SearchMessageTest(_LookupCase):
             for legacy in (False, True):
                 with self.subTest(mode=mode, legacy=legacy):
                     self.lookup(mode, legacy)
-                    self.assertEqual(TEXT_ONLY_SEARCH, self.search())
+                    self.assertIsNone(self.search())
 
     def test_timeout_behaves_as_today(self) -> None:
         self.lookup("ambiguous")

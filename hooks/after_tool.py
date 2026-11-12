@@ -12,7 +12,10 @@ base-declarations.ts).
   the model reads (core/coreToolHookTriggers.ts). This used to be a BeforeTool
   hook printing `systemMessage`, which Gemini shows the user and never the
   model; a BeforeTool hook has no channel to the model short of blocking the
-  tool (scheduler/hook-utils.ts).
+  tool (scheduler/hook-utils.ts). A grep for a plain identifier gets one
+  `ix locate`, a read one `ix overview`; any other grep, or a pattern shaped
+  like a token, starts no ix process. IX_HOOK_SEARCH_HINT and
+  IX_HOOK_READ_HINT set to 0, off, false or no turn each hint off.
 - A file-modifying shell command, or a successful `write_file`/`replace`,
   requests the guarded background `ix map`.
 """
@@ -24,6 +27,8 @@ from pathlib import Path
 
 from common import (
     HOOK_BUDGET_SECONDS,
+    READ_HINT_ENV,
+    SEARCH_HINT_ENV,
     Deadline,
     build_read_message,
     build_search_message,
@@ -32,8 +37,12 @@ from common import (
     extract_read_path,
     extract_search_pattern,
     find_workspace_root,
-    ix_healthy,
+    hint_enabled,
+    ix_available,
+    ix_known_unhealthy,
     log,
+    looks_like_identifier,
+    looks_like_secret,
     read_event,
     request_guarded_map,
 )
@@ -181,12 +190,23 @@ def _tool_failed(event: dict) -> bool:
 
 
 def _shell_context(event: dict, command: str, deadline: Deadline) -> str | None:
+    """Ix context for a shell search or read, from at most one ix process.
+
+    Everything that can rule the hint out without ix is checked first: its
+    switch, the pattern (a plain identifier that is not shaped like a token),
+    ix on PATH and a cached "not healthy". No `ix status` is run here.
+    """
     pattern = extract_search_pattern(command)
     file_path = None if pattern else extract_read_path(command)
-    if not pattern and not file_path:
+    if pattern:
+        if not hint_enabled(SEARCH_HINT_ENV):
+            return None
+        if not looks_like_identifier(pattern) or looks_like_secret(pattern):
+            return None
+    elif not file_path or not hint_enabled(READ_HINT_ENV):
         return None
     workspace_root = find_workspace_root(event.get("cwd"))
-    if not ix_healthy(workspace_root, deadline):
+    if not ix_available() or ix_known_unhealthy(workspace_root):
         return None
     if pattern:
         return build_search_message(pattern, workspace_root, deadline)

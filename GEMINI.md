@@ -125,7 +125,7 @@ The `agents/` directory carries reusable playbook docs:
 The Gemini CLI extension uses these hook events:
 - `SessionStart` injects Ix operating guidance
 - `BeforeAgent` injects the Ix Pro briefing (text, capped) once per 10 minutes, and nothing when every section is empty
-- `AfterTool` for `run_shell_command` appends Ix context to the result of `grep`/`rg` and read-style shell commands. When a lookup is ambiguous it lists ix's candidates with their `--pick` numbers; when a symbol is not found it lists ix's suggestions; in an unmapped workspace it says so at most once every 30 minutes
+- `AfterTool` for `run_shell_command` appends Ix context to the result of `grep`/`rg` and read-style shell commands, from at most one `ix` call: for a grep whose pattern is a plain identifier, where it is defined (`ix locate`) and the `ix callers` command to run next; for a file read, its key items (`ix overview`). A grep for a phrase, a regular expression or a pattern shaped like a token starts no `ix` call and adds nothing. When a lookup is ambiguous it lists ix's candidates with their `--pick` numbers; when a symbol is not found it lists ix's suggestions; in an unmapped workspace it says so at most once every 30 minutes
 - `AfterTool` for `run_shell_command`, `write_file` and `replace` requests a guarded background `ix map <git root> --silent` after a file edit (only for an already-mapped repo, at most once per 5 minutes per repo)
 
 Context reaches the model only as `hookSpecificOutput.additionalContext` (SessionStart, BeforeAgent, AfterTool). `systemMessage` is shown to the user only, and a BeforeTool hook has no channel to the model short of blocking the tool, so there is no BeforeTool hook.

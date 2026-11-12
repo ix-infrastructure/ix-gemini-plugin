@@ -60,9 +60,16 @@ Reusable playbook docs in [`agents/`](./agents):
 |---------|-------------|--------|
 | Session starts | `SessionStart` | Injects Ix operating guidance and graph-first rules into the model's context |
 | Before agent plans | `BeforeAgent` | Injects `ix briefing` (text, capped) once per 10 min if Ix Pro is available; an empty briefing injects nothing |
-| After shell search/read | `AfterTool` (`run_shell_command`) | Appends `ix text` + `ix locate` (for `grep`/`rg`) or `ix overview` + `ix impact` (for `cat`/`head`/...) context to the tool result the model reads |
+| After shell search/read | `AfterTool` (`run_shell_command`) | Appends one `ix locate` (for a `grep`/`rg` whose pattern is a plain identifier) or one `ix overview` (for `cat`/`head`/...) to the tool result the model reads. A phrase, a regular expression or a pattern shaped like a token starts no `ix` call |
 | After a file edit | `AfterTool` (`run_shell_command`, `write_file`, `replace`) | After a file-modifying shell command or a native edit, refreshes an already-mapped git repo in the background (`ix map <root> --silent`, at most once per 5 min per repo) |
 | Session ends | `SessionEnd` | Same guarded background refresh of the project's git root |
+
+Each shell hint has its own off switch, read from the environment Gemini CLI runs in. Set it to `0`, `off`, `false` or `no`; unset, or any other value, leaves the hint on:
+
+- `IX_HOOK_SEARCH_HINT` turns off the `grep`/`rg` hint.
+- `IX_HOOK_READ_HINT` turns off the `cat`/`head`/`tail`/`sed`/`awk` hint.
+
+Neither hint runs `ix status` first. A hint skips its lookup while a health answer cached in the last 30 seconds says Ix is not healthy; `SessionStart` writes that answer, and `BeforeAgent` only when a briefing is due, so most hinted commands find none and run the lookup. A hint whose lookup times out pauses both hints in that workspace for 30 seconds, without touching the health answer the other hooks use.
 
 ## How It Works
 

@@ -280,9 +280,10 @@ class BudgetTest(unittest.TestCase):
     def test_spent_deadline_runs_nothing(self) -> None:
         self.assertIsNone(self.common.Deadline(0).timeout(10))
         self.assertEqual(
-            {"text": (self.common.LOOKUP_ERROR, None)},
-            self.common.run_parallel_lookup(
-                [("text", ["ix", "text", "x"], 10)], self.tmp, deadline=self.common.Deadline(0)
+            (self.common.LOOKUP_ERROR, None),
+            self.common._hint_lookup(
+                ["ix", "locate", "verify_token", "--format", "json"], self.tmp,
+                deadline=self.common.Deadline(0),
             ),
         )
         self.assertEqual([], fake_ix.read_log(Path(os.environ["FAKE_IX_LOG"])))
