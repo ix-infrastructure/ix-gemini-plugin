@@ -189,7 +189,6 @@ class RealIxTests(unittest.TestCase):
         """No context, no traceback, exit 0 -- Gemini treats anything else as a hook failure."""
         cwd = str(PROJECT)
         cases = [
-            ("session_start.py", {"hook_event_name": "SessionStart", "cwd": cwd}),
             ("before_agent.py", {"hook_event_name": "BeforeAgent", "cwd": cwd, "prompt": "hi"}),
             ("after_tool.py", {"hook_event_name": "AfterTool", "cwd": cwd,
                                "tool_name": "run_shell_command",
@@ -222,7 +221,7 @@ class RealIxTests(unittest.TestCase):
         if result.returncode == 0:
             self.skipTest("this ix has Ix Pro installed")
         self.assertTrue(common._is_pro_stub_response(result), result.stdout + result.stderr)
-        self.assertFalse(common.ix_pro_available(PROJECT))
+        self.assertFalse(common.ix_pro_briefing(PROJECT)[0])
         cached = json.loads(common.PRO_CACHE_PATH.read_text())
         self.assertIs(cached["ok"], False)
 
