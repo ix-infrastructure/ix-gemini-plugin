@@ -530,14 +530,16 @@ class WindowsLaunchTest(unittest.TestCase):
         repo = self.tmp / "hook" / "repo"
         repo.mkdir(parents=True)
         result = subprocess.run(
-            [sys.executable, str(HOOKS_DIR / "session_start.py")],
-            input=json.dumps({"cwd": str(repo)}), env=env, cwd=str(repo),
+            [sys.executable, str(HOOKS_DIR / "before_agent.py")],
+            input=json.dumps({"cwd": str(repo), "prompt": "hi"}), env=env, cwd=str(repo),
             capture_output=True, text=True, timeout=60,
         )
         self.assertEqual(0, result.returncode, result.stderr)
         calls = fake_ix.read_log(Path(env["FAKE_IX_LOG"]))
         self.assertIn(["status"], [call["argv"] for call in calls])
-        self.assertIn("Ix Memory is available", result.stdout)
+        # The hook's output must reach stdout, where Gemini reads it.
+        context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("[ix] Session briefing", context)
 
 
 _HOOK_COMMAND_RE = re.compile(r'^python3 "\$\{extensionPath\}/hooks/[a-z_]+\.py"$')
@@ -559,7 +561,7 @@ class HookCommandTest(unittest.TestCase):
 
     def test_commands_quote_the_extension_path(self) -> None:
         commands = _hook_commands(HOOKS_DIR / "hooks.json")
-        self.assertEqual(4, len(commands))
+        self.assertEqual(3, len(commands))
         for command in commands:
             self.assertRegex(command, _HOOK_COMMAND_RE)
 

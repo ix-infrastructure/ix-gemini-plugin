@@ -58,7 +58,6 @@ Reusable playbook docs in [`agents/`](./agents):
 
 | Trigger | Gemini hook | Effect |
 |---------|-------------|--------|
-| Session starts | `SessionStart` | Injects Ix operating guidance and graph-first rules into the model's context |
 | Before agent plans | `BeforeAgent` | Injects `ix briefing` (text, capped) once per 10 min if Ix Pro is available; an empty briefing injects nothing |
 | After shell search/read | `AfterTool` (`run_shell_command`) | Appends `ix text` + `ix locate` (for `grep`/`rg`) or `ix overview` + `ix impact` (for `cat`/`head`/...) context to the tool result the model reads |
 | After a file edit | `AfterTool` (`run_shell_command`, `write_file`, `replace`) | After a file-modifying shell command or a native edit, refreshes an already-mapped git repo in the background (`ix map <root> --silent`, at most once per 5 min per repo) |
@@ -70,7 +69,7 @@ Reusable playbook docs in [`agents/`](./agents):
 - `hooks/hooks.json` maps each hook event above to a Python script in `hooks/`. `AfterTool` is matched by tool name; Gemini's shell tool is `run_shell_command`. Each script reads the event as JSON on stdin and runs `ix` within a time budget below its `timeout` in `hooks.json`, because Gemini drops the output of a hook that runs over. The shared helpers are in `hooks/common.py`.
 - Context reaches the model only as `hookSpecificOutput.additionalContext`. `systemMessage` is shown to the user only, so there is no `BeforeTool` hook: it could reach the model only by blocking the tool.
 - Hooks write diagnostics to stderr, never to stdout and never to a log file. `AfterTool` and `SessionEnd` catch any exception, log it and still exit 0.
-- Gemini discovers skills from `skills/<name>/SKILL.md`. `agents/` holds playbook documents, and `GEMINI.md` is the operating guide. The installers copy all three, with the manifest and hooks, into the extension directory.
+- Gemini discovers skills from `skills/<name>/SKILL.md`. `agents/` holds playbook documents, and `GEMINI.md` is the context file Gemini loads into every session. The installers copy all three, with the manifest and hooks, into the extension directory.
 
 The tests (see Local Validation) do not start Gemini CLI. With a real `gemini` and `ix`, check by hand that `gemini extensions install .` succeeds, the `ix-memory` tools appear and answer for the opened project, each hook fires without error (and without crashing Gemini when `ix` is missing), and the skills appear in `/skills list`.
 
@@ -128,6 +127,16 @@ Run the hook and manifest tests with:
 
 The tests run every hook against a strict fake `ix`, never a real backend, and skip live Gemini CLI validation when `gemini` is not installed.
 
-## Repo Guidance
+## Always-on context
 
-The repo-level operating guide lives in [`GEMINI.md`](./GEMINI.md). It carries the graph-first reasoning model, skill reference, and token-budget rules.
+Every session carries, before the user asks anything:
+
+- [`GEMINI.md`](./GEMINI.md), the extension's context file: the `ix-memory` tool table and four rules. CI fails if it is over 2,500 bytes.
+- The name and description of each skill and agent.
+- The MCP tool catalog of `ix mcp --tools=all`, which the Ix CLI provides and this repo does not measure.
+
+CI also fails if the first two together are over 5,000 bytes. They came to 3,988 bytes (2,056 for `GEMINI.md`) when these ceilings were set; `python3 hooks/tests/test_context_size.py --report` prints the current sizes. There is no SessionStart message.
+
+## Contributing
+
+Notes for editing the extension (layout, hooks, checks) are in [`CONTRIBUTING.md`](./CONTRIBUTING.md), which Gemini does not load.

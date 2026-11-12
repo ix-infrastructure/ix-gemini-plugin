@@ -174,12 +174,6 @@ class _HookRun(unittest.TestCase):
 
 
 class ContextHooksTest(_HookRun):
-    def test_session_start_context_reaches_the_model(self) -> None:
-        result = self.run_hook("session_start.py", {"hook_event_name": "SessionStart", "source": "startup"})
-        context = model_context(self.json_output(result, "SessionStart"))
-        self.assertIsNotNone(context)
-        self.assertIn("Ix Memory is available", context)
-
     def test_before_agent_briefing_reaches_the_model(self) -> None:
         result = self.run_hook("before_agent.py", {"hook_event_name": "BeforeAgent", "prompt": "hi"})
         context = model_context(self.json_output(result, "BeforeAgent"))

@@ -57,7 +57,6 @@ MAP_DEBOUNCE_SECONDS = 300
 # output (hookRunner.ts), so an unbounded hook loses its context entirely and
 # holds up the turn or tool result for the full timeout before it does.
 HOOK_BUDGET_SECONDS = {
-    "SessionStart": 10,
     "BeforeAgent": 12,
     "AfterTool": 8,
     "SessionEnd": 3,
@@ -596,10 +595,6 @@ def _is_pro_stub_response(result: subprocess.CompletedProcess[str]) -> bool:
     """
     blob = f"{result.stdout or ''}{result.stderr or ''}"
     return "requires Ix Pro" in blob
-
-
-def ix_pro_available(cwd: str | Path | None, deadline: Deadline | None = None) -> bool:
-    return ix_pro_briefing(cwd, deadline)[0]
 
 
 def ix_pro_briefing(

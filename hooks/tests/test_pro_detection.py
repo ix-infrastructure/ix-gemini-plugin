@@ -57,7 +57,7 @@ class ProDetectionTest(unittest.TestCase):
 
     def _run_probe(self, result):
         with patch.object(self.common, "run_command", return_value=result):
-            return self.common.ix_pro_available(None)
+            return self.common.ix_pro_briefing(None)[0]
 
     def test_does_not_probe_with_help(self) -> None:
         seen: list[list[str]] = []
@@ -67,7 +67,7 @@ class ProDetectionTest(unittest.TestCase):
             return _completed(0, stdout="Goals\n  - ship it\n")
 
         with patch.object(self.common, "run_command", side_effect=record):
-            self.common.ix_pro_available(None)
+            self.common.ix_pro_briefing(None)
 
         self.assertEqual([["ix", "briefing", "--format", "text"]], seen)
 
