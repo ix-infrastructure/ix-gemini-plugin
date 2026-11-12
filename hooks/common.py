@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import hashlib
 import json
 import os
@@ -72,7 +71,36 @@ KILL_TREE_SECONDS = 1.0
 SHELL_OPERATORS = ("|", "&&", "||", ";", "$(", "`")
 SEARCH_COMMANDS = {"grep", "rg"}
 READ_COMMANDS = {"cat", "head", "tail", "sed", "awk"}
-REGEX_META_RE = re.compile(r"[\\^$\[\](){}|*+?]")
+# The search hint answers "where is this symbol defined", so it runs only for a
+# pattern that could be one: a plain identifier, never a phrase, a regular
+# expression or a path, and never one that is too short to be specific.
+IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+MIN_PATTERN_CHARS = 3
+# Grep patterns shaped like credentials are neither sent to ix nor echoed back.
+# Known token formats first, then generic high-entropy runs: a long hex string,
+# or a long letters-and-digits run that switches between upper case, lower case
+# and digits far more often than a camelCase name does.
+_SECRET_PREFIX_RE = re.compile(
+    r"gh[pousr]_[A-Za-z0-9]{30,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA)[A-Z0-9]{16}"
+    r"|[rs]k_(?:live|test)_[A-Za-z0-9]{16,}"
+    r"|xox[abposr][-_][A-Za-z0-9_-]{10,}"
+    r"|glpat[-_][A-Za-z0-9_-]{20,}"
+    r"|AIza[A-Za-z0-9_-]{30,}"
+    r"|npm_[A-Za-z0-9]{30,}"
+)
+_HEX_RUN_RE = re.compile(r"[0-9a-fA-F]{32,}")
+_ALNUM_RUN_RE = re.compile(r"[A-Za-z0-9]{20,}")
+# Share of adjacent characters that change class (upper/lower/digit): about 0.6
+# for a random token, well under 0.5 for an identifier made of words.
+_TOKEN_SWITCH_RATIO = 0.5
+# One switch per hint. Unset or any other value leaves the hint on.
+SEARCH_HINT_ENV = "IX_HOOK_SEARCH_HINT"
+READ_HINT_ENV = "IX_HOOK_READ_HINT"
+_HINT_OFF_VALUES = {"0", "off", "false", "no"}
+# Cap on the one ix lookup a hint makes.
+HINT_LOOKUP_SECONDS = 10
 SEARCH_VALUE_OPTIONS = {
     "-A", "-B", "-C", "-e", "-f", "-g", "-m", "-t",
     "--context", "--file", "--glob", "--max-count",
@@ -560,30 +588,72 @@ def _briefing_cache_path(root: str | Path | None) -> Path:
     return CACHE_DIR / "briefing" / f"{_root_key(root)}.txt"
 
 
+def _cached_health(cwd: str | Path | None) -> bool | None:
+    """The health answer cached for this workspace, or None if none is fresh."""
+    cache_path = _status_cache_path(cwd)
+    if not cache_path.exists():
+        return None
+    try:
+        cached = json.loads(cache_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(cached, dict):
+        return None
+    timestamp = float(cached.get("timestamp", 0))
+    if time.time() - timestamp >= HEALTH_TTL_SECONDS:
+        return None
+    return bool(cached.get("ok", False))
+
+
 def ix_healthy(cwd: str | Path | None, deadline: Deadline | None = None) -> bool:
     if not ix_available():
         return False
-    cache_path = _status_cache_path(cwd)
-    if cache_path.exists():
-        try:
-            cached = json.loads(cache_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            cached = None
-        if isinstance(cached, dict):
-            timestamp = float(cached.get("timestamp", 0))
-            ok = bool(cached.get("ok", False))
-            if time.time() - timestamp < HEALTH_TTL_SECONDS:
-                return ok
+    cached = _cached_health(cwd)
+    if cached is not None:
+        return cached
     timeout = _call_timeout(8, deadline)
     if timeout is None:
         return False
     result = run_command(["ix", "status"], cwd=cwd, timeout=timeout)
     ok = bool(result and result.returncode == 0)
     try:
-        _write_cache(cache_path, {"timestamp": time.time(), "ok": ok})
+        _write_cache(_status_cache_path(cwd), {"timestamp": time.time(), "ok": ok})
     except OSError:
         pass
     return ok
+
+
+def _hint_backoff_path(root: str | Path | None) -> Path:
+    return CACHE_DIR / "hint-backoff" / f"{_root_key(root)}.stamp"
+
+
+def _start_hint_backoff(cwd: str | Path | None) -> None:
+    path = _hint_backoff_path(cwd)
+    try:
+        _ensure_private_dir(path.parent)
+        path.write_text(str(time.time()))
+    except OSError as exc:
+        log(f"[ix] hint back-off stamp failed (non-fatal): {exc}")
+
+
+def ix_known_unhealthy(cwd: str | Path | None) -> bool:
+    """True when the shell hints should not call ix here for now.
+
+    That is when a fresh cached health answer says ix is not healthy, or a hint
+    lookup timed out in this workspace within HEALTH_TTL_SECONDS. The shell
+    hints check only this, not ``ix status``, so a hinted command starts at
+    most the one lookup it needs. The health answer is written by
+    ``ix_healthy``: by SessionStart, and by BeforeAgent only when a briefing is
+    due, so most hinted commands find no fresh answer and run the lookup. A
+    hint timeout is kept apart from that answer, so a slow lookup never turns
+    off SessionStart guidance or the BeforeAgent briefing.
+    """
+    if _cached_health(cwd) is False:
+        return True
+    try:
+        return time.time() - _hint_backoff_path(cwd).stat().st_mtime < HEALTH_TTL_SECONDS
+    except OSError:
+        return False
 
 
 def _is_pro_stub_response(result: subprocess.CompletedProcess[str]) -> bool:
@@ -596,10 +666,6 @@ def _is_pro_stub_response(result: subprocess.CompletedProcess[str]) -> bool:
     """
     blob = f"{result.stdout or ''}{result.stderr or ''}"
     return "requires Ix Pro" in blob
-
-
-def ix_pro_available(cwd: str | Path | None, deadline: Deadline | None = None) -> bool:
-    return ix_pro_briefing(cwd, deadline)[0]
 
 
 def ix_pro_briefing(
@@ -933,8 +999,37 @@ def _summarize_read_ambiguity(
 
 # ── Pattern detection ────────────────────────────────────────────────────────
 
-def looks_plain_pattern(pattern: str) -> bool:
-    return bool(pattern) and not REGEX_META_RE.search(pattern)
+def hint_enabled(env_name: str) -> bool:
+    """False when ``env_name`` is set to 0, off, false or no."""
+    return os.environ.get(env_name, "").strip().lower() not in _HINT_OFF_VALUES
+
+
+def looks_like_identifier(pattern: str) -> bool:
+    return len(pattern) >= MIN_PATTERN_CHARS and IDENTIFIER_RE.fullmatch(pattern) is not None
+
+
+def _class_switch_ratio(run: str) -> float:
+    classes = ["d" if c.isdigit() else "u" if c.isupper() else "l" for c in run]
+    switches = sum(1 for a, b in zip(classes, classes[1:]) if a != b)
+    return switches / (len(run) - 1)
+
+
+def looks_like_secret(pattern: str) -> bool:
+    """True when ``pattern`` contains something shaped like a token or key."""
+    if _SECRET_PREFIX_RE.search(pattern):
+        return True
+    for run in _HEX_RUN_RE.findall(pattern):
+        if any(c.isdigit() for c in run) and any(c.isalpha() for c in run):
+            return True
+    for run in _ALNUM_RUN_RE.findall(pattern):
+        if (
+            any(c.isdigit() for c in run)
+            and any(c.isupper() for c in run)
+            and any(c.islower() for c in run)
+            and _class_switch_ratio(run) >= _TOKEN_SWITCH_RATIO
+        ):
+            return True
+    return False
 
 
 def extract_search_pattern(command: str) -> str | None:
@@ -1003,34 +1098,6 @@ def skip_read_path(file_path: str) -> bool:
 
 # ── Result summarizers ───────────────────────────────────────────────────────
 
-def summarize_text_results(payload: dict | list | None) -> str:
-    if isinstance(payload, dict):
-        items = payload.get("results", [])
-    elif isinstance(payload, list):
-        items = payload
-    else:
-        items = []
-    if not isinstance(items, list) or not items:
-        return ""
-    paths: list[str] = []
-    for item in items:
-        if isinstance(item, dict) and item.get("path"):
-            name = Path(str(item["path"])).name
-            if name and name not in paths:
-                paths.append(name)
-            if len(paths) == 4:
-                break
-    count = len(items)
-    files = ", ".join(paths)
-    more = max(0, count - 4)
-    summary = f"{count} text hits"
-    if files:
-        summary += f" in {files}"
-    if more:
-        summary += f" (+{more} more)"
-    return summary
-
-
 def summarize_locate_results(payload: dict | list | None) -> str:
     if not isinstance(payload, dict):
         return ""
@@ -1061,25 +1128,6 @@ def summarize_locate_results(payload: dict | list | None) -> str:
     return "candidates: " + ", ".join(names) if names else ""
 
 
-def summarize_impact(payload: dict | list | None) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    risk_level = str(payload.get("riskLevel") or "unknown").lower()
-    summary = payload.get("summary", {})
-    direct = int(summary.get("directDependents", 0) or 0) if isinstance(summary, dict) else 0
-    member = int(summary.get("memberLevelCallers", 0) or 0) if isinstance(summary, dict) else 0
-    effective = max(direct, member)
-    if risk_level in {"unknown", "low"} or effective <= 2:
-        return ""
-    if risk_level == "critical":
-        return f"CRITICAL: {effective} dependents"
-    if risk_level == "high":
-        return f"HIGH RISK: {effective} dependents"
-    if risk_level == "medium":
-        return f"{effective} dependents"
-    return ""
-
-
 def summarize_overview(payload: dict | list | None) -> str:
     if not isinstance(payload, dict):
         return ""
@@ -1102,72 +1150,27 @@ def summarize_overview(payload: dict | list | None) -> str:
     return summary
 
 
-def summarize_inventory(payload: dict | list | None) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    summary_obj = payload.get("summary", {})
-    results = payload.get("results", [])
-    total = 0
-    if isinstance(summary_obj, dict):
-        total = int(summary_obj.get("total", 0) or 0)
-    if total == 0 and isinstance(results, list):
-        total = len(results)
-    if total == 0:
-        return ""
-    sample = []
-    if isinstance(results, list):
-        for item in results[:5]:
-            if isinstance(item, dict) and item.get("name"):
-                sample.append(str(item["name"]))
-    text = f"{total} entities"
-    if sample:
-        text += ": " + ", ".join(sample)
-        if total > len(sample):
-            text += " ..."
-    return text
+# ── Hint lookup ──────────────────────────────────────────────────────────────
 
+def _hint_lookup(
+    argv: list[str], cwd: str | Path | None, deadline: Deadline | None = None
+) -> tuple[str, dict | list | None]:
+    """The one ix call a shell hint makes, read as ``run_ix_lookup`` reads it.
 
-# ── Parallel execution ───────────────────────────────────────────────────────
-
-def _run_parallel(calls, cwd, deadline, runner, skipped):
-    results = {}
-    runnable: list[tuple[str, list[str], float]] = []
-    for name, argv, cap in calls:
-        timeout = _call_timeout(cap, deadline)
-        if timeout is None:
-            results[name] = skipped
-        else:
-            runnable.append((name, argv, timeout))
-    if not runnable:
-        return results
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(runnable)) as executor:
-        future_map = {
-            executor.submit(runner, argv, cwd=cwd, timeout=timeout): name
-            for name, argv, timeout in runnable
-        }
-        for future in concurrent.futures.as_completed(future_map):
-            results[future_map[future]] = future.result()
-    return results
-
-
-def run_parallel_lookup(
-    calls: list[tuple[str, list[str], int]],
-    cwd: str | Path | None,
-    deadline: Deadline | None = None,
-) -> dict[str, tuple[str, dict | list | None]]:
-    """Run the calls at once, each answer as ``run_ix_lookup`` reads it.
-
-    Each call is cut off at its own cap or the deadline; a call the deadline
-    leaves no time for is not run and answers ``LOOKUP_ERROR``.
+    Not run when the deadline leaves no time for it. A call that runs out its
+    whole timeout pauses the shell hints in this workspace for
+    HEALTH_TTL_SECONDS, so a hung backend costs one wait per window rather
+    than one per command. Only the hints pause: the shared health answer
+    SessionStart and BeforeAgent read is left alone.
     """
-    return _run_parallel(calls, cwd, deadline, run_ix_lookup, (LOOKUP_ERROR, None))
-
-
-def _ok_payload(answer: tuple[str, dict | list | None] | None) -> dict | list | None:
-    """The payload of a successful answer; None for any other, as before #853."""
-    if answer is None or answer[0] != LOOKUP_OK:
-        return None
-    return answer[1]
+    timeout = _call_timeout(HINT_LOOKUP_SECONDS, deadline)
+    if timeout is None:
+        return LOOKUP_ERROR, None
+    started = time.monotonic()
+    answer = run_ix_lookup(argv, cwd=cwd, timeout=timeout)
+    if answer == (LOOKUP_ERROR, None) and time.monotonic() - started >= timeout:
+        _start_hint_backoff(cwd)
+    return answer
 
 
 # ── Message builders ─────────────────────────────────────────────────────────
@@ -1175,81 +1178,61 @@ def _ok_payload(answer: tuple[str, dict | list | None] | None) -> dict | list | 
 def build_search_message(
     pattern: str, cwd: str | Path | None, deadline: Deadline | None = None
 ) -> str | None:
-    if len(pattern) < 3:
-        return None
-    calls: list[tuple[str, list[str], int]] = [
-        ("text", ["ix", "text", pattern, "--limit", "15", "--format", "json"], 10),
-    ]
-    if looks_plain_pattern(pattern):
-        # `ix locate` has no --limit: it returns one resolved target (or candidates).
-        calls.append(("locate", ["ix", "locate", pattern, "--format", "json"], 10))
-    results = run_parallel_lookup(calls, cwd, deadline)
+    """Where the grepped symbol is defined, from one ``ix locate``.
 
-    text_part = summarize_text_results(_ok_payload(results.get("text")))
-    locate_outcome, locate_payload = results.get("locate", (LOOKUP_ERROR, None))
-    if locate_outcome == LOOKUP_AMBIGUOUS:
-        locate_part = summarize_ambiguous(locate_payload, f"ix locate '{pattern}'")
-    elif locate_outcome == LOOKUP_NOT_FOUND:
-        locate_part = summarize_unresolved(locate_payload, pattern)
-    elif locate_outcome == LOOKUP_NOT_MAPPED:
+    Only for a plain identifier that does not look like a token; anything else
+    starts no ix process. The grep's own matches are not repeated.
+    """
+    if not looks_like_identifier(pattern) or looks_like_secret(pattern):
+        return None
+    # `ix locate` has no --limit: it returns one resolved target (or candidates).
+    outcome, payload = _hint_lookup(["ix", "locate", pattern, "--format", "json"], cwd, deadline)
+    callers = ""
+    if outcome == LOOKUP_AMBIGUOUS:
+        locate_part = summarize_ambiguous(payload, f"ix locate '{pattern}'")
+    elif outcome == LOOKUP_NOT_FOUND:
+        locate_part = summarize_unresolved(payload, pattern)
+    elif outcome == LOOKUP_NOT_MAPPED:
         locate_part = not_mapped_line(cwd)
+    elif outcome == LOOKUP_OK:
+        locate_part = summarize_locate_results(payload)
+        resolved = payload.get("resolvedTarget") if isinstance(payload, dict) else None
+        if locate_part and isinstance(resolved, dict):
+            callers = f"callers: ix callers {shlex.quote(str(resolved.get('name') or pattern))}"
     else:
-        locate_part = summarize_locate_results(_ok_payload(results.get("locate")))
-    if not text_part and not locate_part:
+        locate_part = ""
+    if not locate_part:
         return None
-
-    pieces = [f"[ix] shell grep intercepted for '{pattern}'"]
-    if locate_part:
-        pieces.append(locate_part)
-    if text_part:
-        pieces.append(text_part)
-    pieces.append(f"Prefer: ix text '{pattern}' or ix locate '{pattern}' over shell grep")
+    pieces = [f"[ix] shell grep intercepted for '{pattern}'", locate_part]
+    if callers:
+        pieces.append(callers)
     return " | ".join(pieces)
 
 
 def build_read_message(
     file_path: str, cwd: str | Path | None, deadline: Deadline | None = None
 ) -> str | None:
+    """The read file's key items from one ``ix overview``."""
     if not file_path or skip_read_path(file_path):
         return None
     filename = Path(file_path).name
     if not filename:
         return None
-    results = run_parallel_lookup(
-        [
-            ("inventory", ["ix", "inventory", "--kind", "file", "--path", filename, "--format", "json"], 10),
-            ("overview", ["ix", "overview", filename, "--format", "json"], 10),
-            ("impact", ["ix", "impact", filename, "--format", "json"], 10),
-        ],
-        cwd,
-        deadline,
-    )
-    entity_part = (
-        summarize_overview(_ok_payload(results.get("overview")))
-        or summarize_inventory(_ok_payload(results.get("inventory")))
-    )
-    risk_part = summarize_impact(_ok_payload(results.get("impact")))
+    outcome, payload = _hint_lookup(["ix", "overview", filename, "--format", "json"], cwd, deadline)
     # A file the graph does not know (exit 3) is ordinary for a read, so it
     # stays silent; ambiguity and an unmapped workspace are worth a line.
-    lookup_part = ""
-    answers = [results.get(name, (LOOKUP_ERROR, None)) for name in ("overview", "impact", "inventory")]
-    ambiguous = [payload for outcome, payload in answers[:2] if outcome == LOOKUP_AMBIGUOUS]
-    if ambiguous:
-        lookup_part = _summarize_read_ambiguity(ambiguous[0], filename, file_path, cwd)
-    elif not entity_part and not risk_part and any(o == LOOKUP_NOT_MAPPED for o, _ in answers):
+    if outcome == LOOKUP_OK:
+        entity_part = summarize_overview(payload)
+        if not entity_part:
+            return None
+        return f"[ix] {filename} | {entity_part} | Use ix read <symbol> to get just a symbol's source"
+    if outcome == LOOKUP_AMBIGUOUS:
+        lookup_part = _summarize_read_ambiguity(payload, filename, file_path, cwd)
+    elif outcome == LOOKUP_NOT_MAPPED:
         lookup_part = not_mapped_line(cwd)
-    if not entity_part and not risk_part and not lookup_part:
+    else:
         return None
-    pieces = [f"[ix] {filename}"]
-    if entity_part:
-        pieces.append(entity_part)
-    if risk_part:
-        pieces.append(risk_part)
-    if lookup_part:
-        pieces.append(lookup_part)
-    if entity_part or risk_part:
-        pieces.append("Use ix read <symbol> to get just a symbol's source")
-    return " | ".join(pieces)
+    return f"[ix] {filename} | {lookup_part}" if lookup_part else None
 
 
 # ── Guarded automatic map ────────────────────────────────────────────────────

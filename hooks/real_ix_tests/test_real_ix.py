@@ -119,8 +119,8 @@ def plugin_ix_argvs() -> list[list[str]]:
                 if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                     argv.append(elt.value)
                 else:
-                    # str(root) for status/map, pattern for text/locate,
-                    # filename for inventory/overview/impact.
+                    # str(root) for status/map, pattern for locate,
+                    # filename for overview.
                     argv.append(str(REGISTERED) if argv[1:2] in (["status"], ["map"]) else "widget.py")
             argvs.append(argv)
     return argvs
@@ -149,7 +149,7 @@ class RealIxTests(unittest.TestCase):
         # Guard the scan itself: if it stops finding the hooks' calls, it must
         # not pass by checking nothing.
         self.assertTrue(
-            {"status", "text", "locate", "inventory", "overview", "impact", "map", "briefing"}
+            {"status", "locate", "overview", "map", "briefing"}
             <= subcommands,
             f"argv scan found only {sorted(subcommands)}",
         )
@@ -188,6 +188,8 @@ class RealIxTests(unittest.TestCase):
     def test_04_hooks_stay_silent_and_exit_0_when_the_backend_is_down(self) -> None:
         """No context, no traceback, exit 0 -- Gemini treats anything else as a hook failure."""
         cwd = str(PROJECT)
+        # The AfterTool grep runs no `ix status` of its own: it stays silent
+        # because SessionStart, just before it, cached the failed status.
         cases = [
             ("session_start.py", {"hook_event_name": "SessionStart", "cwd": cwd}),
             ("before_agent.py", {"hook_event_name": "BeforeAgent", "cwd": cwd, "prompt": "hi"}),
@@ -222,18 +224,18 @@ class RealIxTests(unittest.TestCase):
         if result.returncode == 0:
             self.skipTest("this ix has Ix Pro installed")
         self.assertTrue(common._is_pro_stub_response(result), result.stdout + result.stderr)
-        self.assertFalse(common.ix_pro_available(PROJECT))
+        self.assertFalse(common.ix_pro_briefing(PROJECT)[0])
         cached = json.loads(common.PRO_CACHE_PATH.read_text())
         self.assertIs(cached["ok"], False)
 
-    def test_07_after_tool_parses_real_text_output_and_real_error_records(self) -> None:
-        """`ix text` works without a backend (ripgrep); `ix locate` fails with a real error.
+    def test_07_after_tool_reads_real_locate_records(self) -> None:
+        """The grep hint's one `ix locate` against real answers.
 
         Unmapped dir: locate prints the `workspace_not_mapped` JSON record on
-        stdout. Registered workspace: locate prints "Error: ..." on stderr.
-        Health is forced true so the hook reaches its ix calls; it must
-        summarise the real `ix text` JSON, drop the locate failure, and print
-        the result on the channel Gemini hands the model.
+        stdout, which the hook turns into the not-mapped line. Registered
+        workspace: locate prints "Error: ..." on stderr, which the hook drops,
+        so it prints nothing. The cached health answer is bypassed so the hook
+        reaches its ix call.
         """
         import after_tool  # noqa: PLC0415
         import common  # noqa: PLC0415
@@ -250,14 +252,18 @@ class RealIxTests(unittest.TestCase):
                          "tool_name": "run_shell_command",
                          "tool_input": {"command": "grep -rn frobnicate_widget ."}}
                 out = io.StringIO()
-                with patch.object(after_tool, "ix_healthy", return_value=True), \
+                with patch.object(after_tool, "ix_known_unhealthy", return_value=False), \
                         patch("sys.stdin", io.StringIO(json.dumps(event))), \
                         contextlib.redirect_stdout(out):
                     after_tool.main()
+                if root == REGISTERED:
+                    self.assertEqual(out.getvalue(), "", "a locate error reached the model")
+                    continue
                 hso = json.loads(out.getvalue())["hookSpecificOutput"]
                 self.assertEqual(hso["hookEventName"], "AfterTool")
-                self.assertIn("1 text hits in widget.py", hso["additionalContext"])
+                self.assertIn(common.NOT_MAPPED_LINE, hso["additionalContext"])
                 self.assertNotIn("error", hso["additionalContext"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()
