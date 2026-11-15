@@ -56,7 +56,6 @@ MAP_DEBOUNCE_SECONDS = 300
 # output (hookRunner.ts), so an unbounded hook loses its context entirely and
 # holds up the turn or tool result for the full timeout before it does.
 HOOK_BUDGET_SECONDS = {
-    "SessionStart": 10,
     "BeforeAgent": 12,
     "AfterTool": 8,
     "SessionEnd": 3,
@@ -643,10 +642,10 @@ def ix_known_unhealthy(cwd: str | Path | None) -> bool:
     lookup timed out in this workspace within HEALTH_TTL_SECONDS. The shell
     hints check only this, not ``ix status``, so a hinted command starts at
     most the one lookup it needs. The health answer is written by
-    ``ix_healthy``: by SessionStart, and by BeforeAgent only when a briefing is
+    ``ix_healthy``, which only BeforeAgent calls and only when a briefing is
     due, so most hinted commands find no fresh answer and run the lookup. A
     hint timeout is kept apart from that answer, so a slow lookup never turns
-    off SessionStart guidance or the BeforeAgent briefing.
+    off the BeforeAgent briefing.
     """
     if _cached_health(cwd) is False:
         return True
@@ -1161,7 +1160,7 @@ def _hint_lookup(
     whole timeout pauses the shell hints in this workspace for
     HEALTH_TTL_SECONDS, so a hung backend costs one wait per window rather
     than one per command. Only the hints pause: the shared health answer
-    SessionStart and BeforeAgent read is left alone.
+    BeforeAgent reads is left alone.
     """
     timeout = _call_timeout(HINT_LOOKUP_SECONDS, deadline)
     if timeout is None:

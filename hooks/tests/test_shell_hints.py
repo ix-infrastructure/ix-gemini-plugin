@@ -186,8 +186,8 @@ class HealthGateTest(_HintCase):
         self.assertEqual(1, len(self.ix_calls()))
 
     def test_a_lookup_timeout_leaves_the_shared_health_answer_alone(self) -> None:
-        # SessionStart and BeforeAgent gate on ix_healthy; a slow hint lookup
-        # must not turn their guidance and briefing off.
+        # BeforeAgent gates on ix_healthy; a slow hint lookup must not turn
+        # its briefing off.
         os.environ["FAKE_IX_SLEEP"] = "20"
         self.common.build_search_message(
             "verify_token", self.tmp, deadline=self.common.Deadline(1.0))

@@ -189,9 +189,8 @@ class RealIxTests(unittest.TestCase):
         """No context, no traceback, exit 0 -- Gemini treats anything else as a hook failure."""
         cwd = str(PROJECT)
         # The AfterTool grep runs no `ix status` of its own: it stays silent
-        # because SessionStart, just before it, cached the failed status.
+        # because BeforeAgent, just before it, cached the failed status.
         cases = [
-            ("session_start.py", {"hook_event_name": "SessionStart", "cwd": cwd}),
             ("before_agent.py", {"hook_event_name": "BeforeAgent", "cwd": cwd, "prompt": "hi"}),
             ("after_tool.py", {"hook_event_name": "AfterTool", "cwd": cwd,
                                "tool_name": "run_shell_command",
