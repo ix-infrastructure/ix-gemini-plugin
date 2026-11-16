@@ -222,7 +222,7 @@ def run_command(
         log(f"[ix] {exc}")
         return None
     except OSError:
-        # ix is not on PATH: report it as missing, never start a bare `ix`.
+        # Not on PATH (ix, or git.exe): report it as missing, never start a bare name.
         return None
     try:
         return _run_windows(launch, cwd, timeout)
@@ -510,10 +510,25 @@ def ix_process_args(
 
 
 def windows_launch(argv: list[str], env: dict[str, str] | None = None) -> WindowsLaunch:
-    """What to hand subprocess on Windows for ``argv``: changed only when it is ix."""
-    if not argv or argv[0] != "ix":
-        return WindowsLaunch(list(argv), None, env)
-    return ix_process_args(list(argv[1:]), _ix_launcher(), env=env)
+    """What to hand subprocess on Windows for ``argv``; FileNotFoundError when not on PATH.
+
+    ix goes through its launcher (see above). Any other program (git today) is
+    started by the absolute path of its `.exe` on PATH: CreateProcess would look
+    a bare name up in the current directory, the user's workspace, before PATH.
+    A `.cmd`/`.bat` does not count, as cmd.exe could interpret the arguments, so
+    with no `.exe` on PATH nothing is started.
+    """
+    if not argv:
+        return WindowsLaunch([], None, env)
+    if argv[0] == "ix":
+        return ix_process_args(list(argv[1:]), _ix_launcher(), env=env)
+    resolved = find_on_path(argv[0], extensions=(".exe",))
+    if resolved is None:
+        raise FileNotFoundError(f"{argv[0]} not found on PATH")
+    child_env = dict(os.environ if env is None else env)
+    # Nor should a bare name the program starts in turn come from the workspace.
+    child_env["NoDefaultCurrentDirectoryInExePath"] = "1"
+    return WindowsLaunch([resolved, *argv[1:]], None, child_env)
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
