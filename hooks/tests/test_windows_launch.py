@@ -173,9 +173,97 @@ class LaunchRouteTest(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             self.common.windows_launch(["ix", "status"])
 
-    def test_other_commands_are_unchanged(self) -> None:
-        launch = self.common.windows_launch(["git", "rev-parse", "--show-toplevel"])
-        self.assertEqual((["git", "rev-parse", "--show-toplevel"], None, None), tuple(launch))
+
+class OtherProgramLaunchTest(unittest.TestCase):
+    """Anything but ix (git today) starts by absolute path from PATH, never from the cwd."""
+
+    def setUp(self) -> None:
+        self.common = _load_common()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name).resolve()
+        self.bin = self.tmp / "git" / "cmd"
+        self.bin.mkdir(parents=True)
+        # The hook's cwd is the workspace; a git planted there must never count.
+        self.workspace = self.tmp / "workspace"
+        self.workspace.mkdir()
+        for name in ("git.exe", "git.cmd", "git.bat", "git.com"):
+            (self.workspace / name).write_text("")
+        cwd = os.getcwd()
+        os.chdir(self.workspace)
+        self.addCleanup(os.chdir, cwd)
+
+    def _launch(self, path_entries: list[str], env: dict[str, str] | None = None):
+        path = os.pathsep.join(path_entries)
+        with patch.dict(os.environ, {"PATH": path, "PATHEXT": ".COM;.EXE;.BAT;.CMD"}):
+            return self.common.windows_launch(["git", "-C", "C:\\a & b", "rev-parse"], env)
+
+    def test_resolved_to_the_absolute_exe_on_path(self) -> None:
+        git = self.bin / "git.exe"
+        git.write_text("")
+        launch = self._launch(["", ".", str(self.bin)])
+        self.assertEqual([str(git), "-C", "C:\\a & b", "rev-parse"], launch.args)
+        self.assertTrue(os.path.isabs(launch.args[0]))
+        self.assertIsNone(launch.executable)
+        # A bare name the program starts in turn is not looked up in the workspace.
+        self.assertEqual("1", launch.env["NoDefaultCurrentDirectoryInExePath"])
+
+    def test_caller_env_is_copied_not_replaced_or_changed(self) -> None:
+        (self.bin / "git.exe").write_text("")
+        env = {"IX_TEST_MARK": "kept"}
+        launch = self._launch([str(self.bin)], env)
+        self.assertEqual("kept", launch.env["IX_TEST_MARK"])
+        self.assertEqual("1", launch.env["NoDefaultCurrentDirectoryInExePath"])
+        self.assertEqual({"IX_TEST_MARK": "kept"}, env)
+
+    def test_without_env_inherits_os_environ(self) -> None:
+        (self.bin / "git.exe").write_text("")
+        with patch.dict(os.environ, {"IX_TEST_MARK": "inherited"}):
+            launch = self._launch([str(self.bin)])
+        self.assertEqual("inherited", launch.env["IX_TEST_MARK"])
+
+    def test_missing_from_path_is_not_started_from_the_cwd(self) -> None:
+        for entries in ([str(self.tmp / "empty")], ["", "."], [], [os.path.join("..", "workspace")]):
+            with self.subTest(path=entries), self.assertRaises(FileNotFoundError):
+                self._launch(entries)
+
+    def test_only_an_exe_counts(self) -> None:
+        # A .cmd/.bat would be run through cmd.exe, which could interpret the
+        # project path argument; a .com is not what any git install provides.
+        for name in ("git.cmd", "git.bat", "git.com"):
+            (self.bin / name).write_text("")
+        with self.assertRaises(FileNotFoundError):
+            self._launch([str(self.bin)])
+
+    def test_run_command_skips_a_missing_program(self) -> None:
+        with patch.object(self.common.os, "name", "nt"), \
+                patch.dict(os.environ, {"PATH": str(self.tmp / "empty")}), \
+                patch.object(self.common, "_run_windows") as run:
+            self.assertIsNone(self.common.run_command(["git", "rev-parse"]))
+        run.assert_not_called()
+
+    def test_project_git_root_skips_the_map_without_git_on_path(self) -> None:
+        with patch.object(self.common.os, "name", "nt"), \
+                patch.dict(os.environ, {"PATH": str(self.tmp / "empty")}), \
+                patch.object(self.common, "_run_windows") as run:
+            self.assertIsNone(self.common.project_git_root(str(self.workspace)))
+        run.assert_not_called()
+
+    @unittest.skipUnless(WINDOWS, "CreateProcess search order")
+    def test_real_git_is_started_not_one_planted_in_the_cwd(self) -> None:
+        git = self.common.find_on_path("git", extensions=(".exe",))
+        if git is None:
+            self.skipTest("git.exe is not on PATH")
+        repo = self.tmp / "repo"
+        subprocess.run([git, "init", "-q", str(repo)], check=True, cwd=str(self.tmp))
+        # A canary that exits 0 with output: if it ran, the "root" would be its output.
+        for name in ("git.exe", "git.cmd", "git.bat", "git.com"):
+            (self.workspace / name).unlink()
+        shutil.copyfile(self.common._system32("hostname.exe"), self.workspace / "git.exe")
+        root = self.common.project_git_root(str(repo))
+        self.assertEqual(repo.resolve(), root)
+        with patch.dict(os.environ, {"PATH": str(self.tmp / "empty")}):
+            self.assertIsNone(self.common.project_git_root(str(repo)))
 
 
 class PathLookupTest(unittest.TestCase):
